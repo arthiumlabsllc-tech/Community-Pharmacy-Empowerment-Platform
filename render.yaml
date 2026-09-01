@@ -1,0 +1,33 @@
+# Render.com Blueprint for Backend
+# Deploy at: https://render.com → New → Blueprint
+
+services:
+  - type: web
+    name: pharmacy-platform-api
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: cd backend && npm install && npm run build
+    startCommand: cd backend && node dist/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: DATABASE_URL
+        sync: false  # Set manually from Supabase connection string
+      - key: REDIS_URL
+        sync: false  # Set manually from Upstash connection string
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        sync: false  # Set to your Vercel frontend URL
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
