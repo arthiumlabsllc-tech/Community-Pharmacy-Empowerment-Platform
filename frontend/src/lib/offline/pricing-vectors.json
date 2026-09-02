@@ -1,0 +1,693 @@
+{
+  "readme": [
+    "Parity vectors for the offline till pricer.",
+    "",
+    "frontend/src/lib/offline/pricing.ts reimplements the part of the Ghana tax",
+    "engine that decides WHAT A CUSTOMER OWES. This file is the contract between",
+    "that reimplementation and the real engine in backend/src/utils/ghana-tax.ts.",
+    "",
+    "Two tests read it:",
+    "  - backend/src/__tests__/offline-parity.test.ts recomputes every `expected`",
+    "    block with computeSaleTax and fails if the server engine has moved.",
+    "  - the frontend pricing test runs priceOfflineBasket over the same inputs",
+    "    and fails if the offline pricer has moved.",
+    "",
+    "So a change to either side breaks a build instead of silently changing what a",
+    "pharmacy charges while its internet is down.",
+    "",
+    "`expected` is generated, not hand-written. Regenerate with:",
+    "    cd backend && npm run parity:emit",
+    "",
+    "Items carry no discounts and no product names: the offline pricer refuses a",
+    "discounted basket outright (see its docblock), and buildLine's no-discount",
+    "path is exactly round2(quantity x unitPrice)."
+  ],
+  "engine": "backend/src/utils/ghana-tax.ts :: computeSaleTax",
+  "generatedBy": "backend/scripts/emit-parity-vectors.ts",
+  "vectors": [
+    {
+      "id": "inclusive-all-exempt",
+      "description": "The common Ghanaian pharmacy basket: Chapter 30 medicines, tax-inclusive shelf prices. Nothing is added and nothing is backed out of what the customer pays.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "inclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 2,
+          "unitPrice": 25,
+          "vatTreatment": "exempt"
+        },
+        {
+          "quantity": 1,
+          "unitPrice": 8.5,
+          "vatTreatment": "exempt"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          50,
+          8.5
+        ],
+        "amountsDue": [
+          50,
+          8.5
+        ],
+        "subtotal": 58.5,
+        "grandTotal": 58.5,
+        "taxableBase": 0,
+        "exemptAmount": 58.5,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    },
+    {
+      "id": "inclusive-all-standard",
+      "description": "Toiletries and devices at tax-inclusive prices. The 20% burden is inside the shelf price, so the amount due is unchanged.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "inclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 3,
+          "unitPrice": 12,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 1,
+          "unitPrice": 149.99,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          36,
+          149.99
+        ],
+        "amountsDue": [
+          36,
+          149.99
+        ],
+        "subtotal": 185.99,
+        "grandTotal": 185.99,
+        "taxableBase": 154.99,
+        "exemptAmount": 0,
+        "vat": 23.25,
+        "nhil": 3.87,
+        "getfund": 3.87,
+        "totalTax": 30.99
+      }
+    },
+    {
+      "id": "inclusive-mixed-basket",
+      "description": "Medicine plus soap plus a thermometer in one basket, inclusive pricing.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "inclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 1,
+          "unitPrice": 42,
+          "vatTreatment": "exempt"
+        },
+        {
+          "quantity": 4,
+          "unitPrice": 6.75,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 1,
+          "unitPrice": 95,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 2,
+          "unitPrice": 3.3,
+          "vatTreatment": "zero_rated"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          42,
+          27,
+          95,
+          6.6
+        ],
+        "amountsDue": [
+          42,
+          27,
+          95,
+          6.6
+        ],
+        "subtotal": 170.6,
+        "grandTotal": 170.6,
+        "taxableBase": 108.27,
+        "exemptAmount": 42,
+        "vat": 15.26,
+        "nhil": 2.54,
+        "getfund": 2.54,
+        "totalTax": 20.34
+      }
+    },
+    {
+      "id": "exclusive-all-standard",
+      "description": "Tax-exclusive pricing: the levy is added to the shelf price, so the customer pays 1.20x the net on standard-rated lines.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 2,
+          "unitPrice": 25,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 5,
+          "unitPrice": 7.99,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          50,
+          39.95
+        ],
+        "amountsDue": [
+          60,
+          47.94
+        ],
+        "subtotal": 89.95,
+        "grandTotal": 107.94,
+        "taxableBase": 89.95,
+        "exemptAmount": 0,
+        "vat": 13.49,
+        "nhil": 2.25,
+        "getfund": 2.25,
+        "totalTax": 17.99
+      }
+    },
+    {
+      "id": "exclusive-mixed-basket",
+      "description": "Tax-exclusive with all three treatments present. Only the standard-rated line is multiplied up.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 1,
+          "unitPrice": 42,
+          "vatTreatment": "exempt"
+        },
+        {
+          "quantity": 4,
+          "unitPrice": 6.75,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 2,
+          "unitPrice": 3.3,
+          "vatTreatment": "zero_rated"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          42,
+          27,
+          6.6
+        ],
+        "amountsDue": [
+          42,
+          32.4,
+          6.6
+        ],
+        "subtotal": 75.6,
+        "grandTotal": 81,
+        "taxableBase": 33.6,
+        "exemptAmount": 42,
+        "vat": 4.05,
+        "nhil": 0.68,
+        "getfund": 0.68,
+        "totalTax": 5.41
+      }
+    },
+    {
+      "id": "unregistered-inclusive",
+      "description": "Below the GHS 750,000 threshold. A pharmacy that must not charge VAT adds nothing, whatever the classification says.",
+      "settings": {
+        "vatRegistered": false,
+        "pricingMode": "inclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 3,
+          "unitPrice": 12,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 1,
+          "unitPrice": 42,
+          "vatTreatment": "exempt"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          36,
+          42
+        ],
+        "amountsDue": [
+          36,
+          42
+        ],
+        "subtotal": 78,
+        "grandTotal": 78,
+        "taxableBase": 0,
+        "exemptAmount": 78,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    },
+    {
+      "id": "unregistered-exclusive",
+      "description": "The trap: tax-exclusive pricing on an unregistered pharmacy must NOT multiply the shelf price by 1.20.",
+      "settings": {
+        "vatRegistered": false,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 3,
+          "unitPrice": 12,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          36
+        ],
+        "amountsDue": [
+          36
+        ],
+        "subtotal": 36,
+        "grandTotal": 36,
+        "taxableBase": 0,
+        "exemptAmount": 36,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    },
+    {
+      "id": "zero-rated-only",
+      "description": "Zero-rated is still a taxable supply but carries nil output tax, so what the customer pays equals the net in both pricing modes.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 7,
+          "unitPrice": 4.4,
+          "vatTreatment": "zero_rated"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          30.8
+        ],
+        "amountsDue": [
+          30.8
+        ],
+        "subtotal": 30.8,
+        "grandTotal": 30.8,
+        "taxableBase": 30.8,
+        "exemptAmount": 0,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    },
+    {
+      "id": "fractional-unit-price-inclusive",
+      "description": "round2 is applied ONCE to quantity x unitPrice. 3 x 3.333 = 9.999 -> 10.00. Rounding the unit price first would give 9.99 and disagree with the server.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "inclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 3,
+          "unitPrice": 3.333,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          10
+        ],
+        "amountsDue": [
+          10
+        ],
+        "subtotal": 10,
+        "grandTotal": 10,
+        "taxableBase": 8.33,
+        "exemptAmount": 0,
+        "vat": 1.25,
+        "nhil": 0.21,
+        "getfund": 0.21,
+        "totalTax": 1.67
+      }
+    },
+    {
+      "id": "fractional-unit-price-exclusive",
+      "description": "The same fractional price under exclusive pricing, where the multiply-up happens after the line rounding.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 3,
+          "unitPrice": 3.333,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          10
+        ],
+        "amountsDue": [
+          12
+        ],
+        "subtotal": 10,
+        "grandTotal": 12,
+        "taxableBase": 10,
+        "exemptAmount": 0,
+        "vat": 1.5,
+        "nhil": 0.25,
+        "getfund": 0.25,
+        "totalTax": 2
+      }
+    },
+    {
+      "id": "single-pesewa",
+      "description": "Smallest possible sale. Must not round to zero and must not be refused.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 1,
+          "unitPrice": 0.01,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          0.01
+        ],
+        "amountsDue": [
+          0.01
+        ],
+        "subtotal": 0.01,
+        "grandTotal": 0.01,
+        "taxableBase": 0.01,
+        "exemptAmount": 0,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    },
+    {
+      "id": "large-basket-drift",
+      "description": "Twelve lines of awkward amounts: the total is the sum of the ROUNDED lines, so any per-line drift shows up here rather than on a receipt.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 7,
+          "unitPrice": 0.07,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 11,
+          "unitPrice": 1.11,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 3,
+          "unitPrice": 9.99,
+          "vatTreatment": "exempt"
+        },
+        {
+          "quantity": 19,
+          "unitPrice": 0.33,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 2,
+          "unitPrice": 149.995,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 999,
+          "unitPrice": 19.99,
+          "vatTreatment": "exempt"
+        },
+        {
+          "quantity": 5,
+          "unitPrice": 2.025,
+          "vatTreatment": "zero_rated"
+        },
+        {
+          "quantity": 13,
+          "unitPrice": 0.77,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 1,
+          "unitPrice": 1000.005,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 21,
+          "unitPrice": 4.444,
+          "vatTreatment": "exempt"
+        },
+        {
+          "quantity": 6,
+          "unitPrice": 0.125,
+          "vatTreatment": "standard"
+        },
+        {
+          "quantity": 33,
+          "unitPrice": 3.03,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          0.49,
+          12.21,
+          29.97,
+          6.27,
+          299.99,
+          19970.01,
+          10.13,
+          10.01,
+          1000.01,
+          93.32,
+          0.75,
+          99.99
+        ],
+        "amountsDue": [
+          0.59,
+          14.65,
+          29.97,
+          7.52,
+          359.99,
+          19970.01,
+          10.13,
+          12.01,
+          1200.01,
+          93.32,
+          0.9,
+          119.99
+        ],
+        "subtotal": 21533.15,
+        "grandTotal": 21819.09,
+        "taxableBase": 1439.85,
+        "exemptAmount": 20093.3,
+        "vat": 214.45,
+        "nhil": 35.75,
+        "getfund": 35.75,
+        "totalTax": 285.95
+      }
+    },
+    {
+      "id": "rate-override-within-bounds",
+      "description": "A pharmacy with a stored rate override. pickRate honours it, so the offline pricer must use 10% VAT and not the statutory 15%.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": {
+          "vat": 0.1,
+          "nhil": 0.025,
+          "getfund": 0.025
+        }
+      },
+      "items": [
+        {
+          "quantity": 2,
+          "unitPrice": 50,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          100
+        ],
+        "amountsDue": [
+          115
+        ],
+        "subtotal": 100,
+        "grandTotal": 115,
+        "taxableBase": 100,
+        "exemptAmount": 0,
+        "vat": 10,
+        "nhil": 2.5,
+        "getfund": 2.5,
+        "totalTax": 15
+      }
+    },
+    {
+      "id": "rate-override-out-of-bounds",
+      "description": "A typo in the settings JSONB (500% VAT). pickRate discards it and the statutory rate applies. An offline pricer that trusted the stored value would charge five times the correct amount.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": {
+          "vat": 5,
+          "nhil": -1,
+          "getfund": 0.025
+        }
+      },
+      "items": [
+        {
+          "quantity": 2,
+          "unitPrice": 50,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          100
+        ],
+        "amountsDue": [
+          120
+        ],
+        "subtotal": 100,
+        "grandTotal": 120,
+        "taxableBase": 100,
+        "exemptAmount": 0,
+        "vat": 15,
+        "nhil": 2.5,
+        "getfund": 2.5,
+        "totalTax": 20
+      }
+    },
+    {
+      "id": "zero-rates-override",
+      "description": "All three rates stored as zero: combined is 0, so even a standard-rated line is charged at its net. The `combined > 0` guard in computeLineTax decides this.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "exclusive",
+        "rates": {
+          "vat": 0,
+          "nhil": 0,
+          "getfund": 0
+        }
+      },
+      "items": [
+        {
+          "quantity": 2,
+          "unitPrice": 50,
+          "vatTreatment": "standard"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          100
+        ],
+        "amountsDue": [
+          100
+        ],
+        "subtotal": 100,
+        "grandTotal": 100,
+        "taxableBase": 0,
+        "exemptAmount": 0,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    },
+    {
+      "id": "unclassified-stock",
+      "description": "toVatTreatment maps anything unrecognised to exempt, so stock nobody classified sells untaxed. The vector pins that behaviour; the inventory screen flags it in amber so it gets fixed.",
+      "settings": {
+        "vatRegistered": true,
+        "pricingMode": "inclusive",
+        "rates": null
+      },
+      "items": [
+        {
+          "quantity": 1,
+          "unitPrice": 30,
+          "vatTreatment": "unknown"
+        }
+      ],
+      "expected": {
+        "lineTotals": [
+          30
+        ],
+        "amountsDue": [
+          30
+        ],
+        "subtotal": 30,
+        "grandTotal": 30,
+        "taxableBase": 0,
+        "exemptAmount": 30,
+        "vat": 0,
+        "nhil": 0,
+        "getfund": 0,
+        "totalTax": 0
+      }
+    }
+  ]
+}

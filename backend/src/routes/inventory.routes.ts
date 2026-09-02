@@ -9,6 +9,7 @@ import { auditLog } from '../middleware/audit.middleware';
 import { UserRole } from '../types';
 import { describeRates, resolveTaxRates, suggestVatTreatment } from '../utils/ghana-tax';
 import logger from '../utils/logger';
+import { findReplay, readClientRequestId, recordReplay } from '../utils/idempotency';
 
 const router = Router();
 
@@ -113,6 +114,14 @@ router.post(
   ]),
   async (req: Request, res: Response) => {
     try {
+      // Stock received during an outage is queued and replayed. The unique
+      // product_code below would catch a retry, but it would answer with a
+      // confusing "already exists" for a delivery the pharmacist knows they
+      // only entered once — the key returns the original row instead.
+      const clientRequestId = readClientRequestId(req);
+      const replay = await findReplay(req.user!.pharmacyId, clientRequestId);
+      if (replay) return res.status(replay.status).json(replay.body);
+
       const {
         product_name, product_code, generic_name, category, manufacturer,
         batch_number, quantity, unit_price, cost_price, expiry_date,
@@ -148,12 +157,22 @@ router.post(
 
       await cacheDel(`inventory:${req.user!.pharmacyId}:*`);
 
-      res.status(201).json({
+      const payload = {
         success: true,
         message: 'Item added to inventory',
         data: result.rows[0],
         vat_treatment_source: vatProvided ? 'provided' : 'suggested',
+      };
+      await recordReplay({
+        pharmacyId: req.user!.pharmacyId,
+        clientRequestId,
+        userId: req.user!.userId,
+        endpoint: 'POST /inventory',
+        status: 201,
+        body: payload,
       });
+
+      res.status(201).json(payload);
     } catch (error: any) {
       if (error.code === '23505') {
         return res.status(409).json({ success: false, message: 'An item with this product code already exists' });

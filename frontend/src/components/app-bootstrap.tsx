@@ -2,15 +2,31 @@
 
 import { useEffect } from 'react';
 import { applyFontSize, readFontSize } from '@/lib/appearance';
+import { startSyncScheduler } from '@/lib/offline/scheduler';
+import { useAuthStore } from '@/store/auth-store';
 
 /**
  * App-wide one-time side effects that have to run in the browser:
  *  - applying the saved accessibility font size
  *  - registering the offline service worker
+ *  - starting the offline sync triggers
+ *
+ * This is the only place that starts the scheduler. `useSyncStatus` deliberately
+ * does not, because it is mounted in a banner that comes and goes with
+ * navigation and must not take the triggers down with it.
  */
 export function AppBootstrap() {
   useEffect(() => {
     applyFontSize(readFontSize());
+  }, []);
+
+  useEffect(() => {
+    // A run cannot succeed without a session, and attempting one every minute
+    // would spend the queue's whole retry budget rediscovering the same 401.
+    const stop = startSyncScheduler({
+      canSync: () => Boolean(useAuthStore.getState().accessToken),
+    });
+    return stop;
   }, []);
 
   useEffect(() => {

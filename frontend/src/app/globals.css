@@ -175,7 +175,17 @@
 
   /* Offline indicator */
   .offline-banner {
-    @apply fixed top-0 left-0 right-0 z-50 bg-yellow-500 text-white text-center py-2 text-sm font-medium;
+    @apply fixed top-0 left-0 right-0 z-50 bg-yellow-400 text-yellow-950 text-center py-2 text-sm font-medium;
+  }
+
+  /* For a banner that needs acting on, not just noticing. Declared after
+     .offline-banner so it wins on background and colour. */
+  .offline-banner-danger {
+    @apply bg-red-600 text-white;
+  }
+
+  .offline-banner a {
+    @apply underline font-semibold;
   }
 }
 

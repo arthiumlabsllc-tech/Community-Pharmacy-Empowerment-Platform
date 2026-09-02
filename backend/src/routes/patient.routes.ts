@@ -7,6 +7,7 @@ import { validate } from '../middleware/validate.middleware';
 import { auditLog } from '../middleware/audit.middleware';
 import { UserRole, RiskLevel } from '../types';
 import logger from '../utils/logger';
+import { findReplay, readClientRequestId, recordReplay } from '../utils/idempotency';
 
 const router = Router();
 router.use(authenticate);
@@ -83,6 +84,13 @@ router.post(
   ]),
   async (req: Request, res: Response) => {
     try {
+      // A patient registered during an outage is queued on the device and may
+      // be replayed after the response was lost. Without the key the retry
+      // would create a second record for the same person.
+      const clientRequestId = readClientRequestId(req);
+      const replay = await findReplay(req.user!.pharmacyId, clientRequestId);
+      if (replay) return res.status(replay.status).json(replay.body);
+
       const {
         first_name, last_name, nhis_number, date_of_birth, gender, phone,
         alternate_phone, address, region, district, emergency_contact_name,
@@ -103,7 +111,17 @@ router.post(
          blood_type || null, notes || null]
       );
 
-      res.status(201).json({ success: true, message: 'Patient registered', data: result.rows[0] });
+      const payload = { success: true, message: 'Patient registered', data: result.rows[0] };
+      await recordReplay({
+        pharmacyId: req.user!.pharmacyId,
+        clientRequestId,
+        userId: req.user!.userId,
+        endpoint: 'POST /patients',
+        status: 201,
+        body: payload,
+      });
+
+      res.status(201).json(payload);
     } catch (error) {
       logger.error('Failed to create patient', error);
       res.status(500).json({ success: false, message: 'Failed to register patient' });

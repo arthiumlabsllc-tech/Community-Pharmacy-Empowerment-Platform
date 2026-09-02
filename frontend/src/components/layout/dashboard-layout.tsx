@@ -7,13 +7,14 @@ import { useAuthStore } from '@/store/auth-store';
 import { usePharmacyStore } from '@/store/pharmacy-store';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { usePermissions } from '@/hooks/use-permissions';
+import { useSyncStatus } from '@/hooks/use-sync-status';
 import { GlobalSearch } from './global-search';
 import { NotificationBell } from './notification-bell';
 import { LanguageSelect } from './language-select';
 import {
   LayoutDashboard, Package, Users, FileText,
   Calendar, Activity, CreditCard, Settings, UserCog,
-  Menu, X, LogOut, ShoppingCart, Receipt, BarChart3,
+  Menu, X, LogOut, ShoppingCart, Receipt, BarChart3, ListChecks,
 } from 'lucide-react';
 
 interface NavItem {
@@ -22,12 +23,19 @@ interface NavItem {
   icon: typeof LayoutDashboard;
   /** When set, the link is only rendered for these roles. */
   roles?: string[];
+  /** When set, the link carries a count of what is waiting in the offline queue. */
+  showQueueCount?: boolean;
 }
 
 const navItems: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/pos', label: 'Point of Sale', icon: ShoppingCart },
   { href: '/sales', label: 'Sales', icon: Receipt },
+  // Sits beside the till rather than at the bottom of the list because that is
+  // where a cashier looks for it, and it is the till that fills it: a sale
+  // recorded during an outage is money taken and goods gone with no record on
+  // the server yet, which is not something to go looking for under Settings.
+  { href: '/sync', label: 'Offline Queue', icon: ListChecks, showQueueCount: true },
   { href: '/inventory', label: 'Inventory', icon: Package },
   { href: '/patients', label: 'Patients', icon: Users },
   { href: '/claims', label: 'NHIS Claims', icon: FileText },
@@ -54,6 +62,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const hydrated = useHydrated();
   const { user, pharmacy, logout } = useAuthStore();
   const { role } = usePermissions();
+  const sync = useSyncStatus();
   const fetchProfile = usePharmacyStore((state) => state.fetchProfile);
   const profileLoaded = usePharmacyStore((state) => state.loaded);
 
@@ -117,6 +126,10 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
             {visibleNavItems.map((item) => {
               const isActive = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
               const Icon = item.icon;
+              // Only once the queue has actually been read. Before that every
+              // count is a guess, and a badge reading 0 would be a claim that
+              // nothing is waiting when nobody has looked yet.
+              const queueCount = item.showQueueCount && sync.ready ? sync.counts.total : 0;
               return (
                 <Link
                   key={item.href}
@@ -126,6 +139,20 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
                 >
                   <Icon className="w-5 h-5 flex-shrink-0" />
                   <span>{item.label}</span>
+                  {queueCount > 0 && (
+                    <span
+                      className={`badge ml-auto ${
+                        sync.counts.dead > 0 ? 'badge-danger' : 'badge-warning'
+                      }`}
+                      title={
+                        sync.counts.dead > 0
+                          ? `${sync.counts.dead} were rejected and need a decision — they will not send themselves`
+                          : `${queueCount} recorded on this device, waiting for a connection`
+                      }
+                    >
+                      {queueCount}
+                    </span>
+                  )}
                 </Link>
               );
             })}

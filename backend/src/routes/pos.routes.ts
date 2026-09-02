@@ -11,11 +11,14 @@ import {
   computeSaleTax,
   resolveTaxRates,
   round2,
+  toVatTreatment,
   type PricingMode,
   type TaxRates,
   type VatTreatment,
 } from '../utils/ghana-tax';
 import paystack, { PaystackError, type ChargeResult } from '../services/paystack.service';
+import { saleTime } from '../utils/sale-time';
+import { buildTillProductQuery } from '../utils/pos-queries';
 
 /**
  * Point of Sale.
@@ -33,9 +36,12 @@ import paystack, { PaystackError, type ChargeResult } from '../services/paystack
  *     pharmacy. Sales are therefore created first, then digital payments are
  *     pushed through the gateway and the sale is re-settled.
  *
- *  3. Stock cannot go negative. The deduction is a conditional UPDATE with
- *     `quantity >= requested`, so a concurrent sale of the last pack fails
- *     loudly instead of producing phantom stock.
+ *  3. Stock cannot go negative at the counter. The deduction is a conditional
+ *     UPDATE with `quantity >= requested`, so a concurrent sale of the last
+ *     pack fails loudly instead of producing phantom stock. The one exception
+ *     is a sale replayed from an offline queue: those goods have already left
+ *     the building, so the count is allowed to go negative and the line is
+ *     reported back for a stock-take to reconcile.
  */
 
 const router = Router();
@@ -124,10 +130,6 @@ interface PosLine {
   discountAmount: number;
   lineTotal: number;
   vatTreatment: VatTreatment;
-}
-
-function toVatTreatment(value: unknown): VatTreatment {
-  return value === 'standard' || value === 'zero_rated' ? value : 'exempt';
 }
 
 /**
@@ -537,52 +539,26 @@ router.use(auditLog);
 // Till catalogue
 // ---------------------------------------------------------------------------
 
-/** Product grid for the till: searchable, ordered so near-expiry stock leads. */
+/**
+ * Product grid for the till: searchable, ordered so near-expiry stock leads.
+ *
+ * Also the source for the offline catalogue cache, which is why it pages: a
+ * cache truncated at one page would leave the rest of the pharmacy's stock
+ * unsellable during an outage, and it would fail silently.
+ */
 router.get('/products', async (req: Request, res: Response) => {
   try {
-    const pharmacyId = req.user!.pharmacyId;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 60, 200);
     const { search, category, inStock } = req.query;
+    const query = buildTillProductQuery({
+      pharmacyId: req.user!.pharmacyId,
+      search: typeof search === 'string' ? search : null,
+      category: typeof category === 'string' ? category : null,
+      inStock: inStock === 'true',
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
 
-    let whereClause = 'WHERE pharmacy_id = $1 AND is_active = true';
-    const params: any[] = [pharmacyId];
-    let idx = 2;
-
-    if (search) {
-      whereClause += ` AND (product_name ILIKE $${idx} OR generic_name ILIKE $${idx}
-                            OR product_code ILIKE $${idx} OR barcode ILIKE $${idx})`;
-      params.push(`%${search}%`);
-      idx++;
-    }
-
-    if (category) {
-      whereClause += ` AND category = $${idx}`;
-      params.push(category);
-      idx++;
-    }
-
-    if (inStock === 'true') {
-      whereClause += ' AND quantity > 0';
-    }
-
-    const result = await db.query(
-      `SELECT id, product_name, generic_name, product_code, barcode, category, manufacturer,
-              unit_price, cost_price, quantity, reorder_level, batch_number, expiry_date,
-              requires_prescription, vat_treatment, pack_size, default_sell_unit, shelf_location,
-              (quantity <= reorder_level) AS needs_reorder,
-              (expiry_date <= CURRENT_DATE) AS is_expired,
-              (expiry_date > CURRENT_DATE
-                 AND expiry_date <= CURRENT_DATE + INTERVAL '90 days') AS near_expiry
-         FROM inventory
-         ${whereClause}
-        ORDER BY
-          -- First-Expiry-First-Out: the shortest-dated stock is offered first.
-          CASE WHEN expiry_date > CURRENT_DATE THEN 0 ELSE 1 END,
-          expiry_date ASC,
-          product_name ASC
-        LIMIT $${idx}`,
-      params
-    );
+    const result = await db.query(query.text, query.params);
 
     res.json({ success: true, data: result.rows });
   } catch (error) {
@@ -790,6 +766,18 @@ router.post(
     body('payments.*.amount').isFloat({ min: 0.01 }).withMessage('Payment amount must be positive'),
     body('patient_id').optional({ nullable: true }).isUUID().withMessage('patient_id must be a valid id'),
     body('client_sale_id').optional({ nullable: true }).isUUID().withMessage('client_sale_id must be a UUID'),
+    // Provenance for a sale the till rang up while the network was down. None
+    // of these change what is charged — they record when it really happened
+    // and what the cashier actually took, so a later disagreement is visible.
+    body('recorded_offline').optional().isBoolean().withMessage('recorded_offline must be true or false'),
+    body('client_recorded_at')
+      .optional({ nullable: true })
+      .isISO8601()
+      .withMessage('client_recorded_at must be an ISO 8601 timestamp'),
+    body('client_quoted_total')
+      .optional({ nullable: true })
+      .isFloat({ min: 0 })
+      .withMessage('client_quoted_total must be zero or more'),
   ]),
   async (req: Request, res: Response) => {
     const pharmacyId = req.user!.pharmacyId;
@@ -808,7 +796,18 @@ router.post(
       nhis_claim_id: nhisClaimId = null,
       client_sale_id: clientSaleId = null,
       approved_by: approvedBy = null,
+      recorded_offline: rawRecordedOffline = false,
+      client_recorded_at: clientRecordedAt = null,
+      client_quoted_total: rawClientQuotedTotal = null,
     } = req.body;
+
+    // express-validator's isBoolean() also lets the strings 'true'/'false'
+    // through, and a queued request may have been serialised either way.
+    const recordedOffline = rawRecordedOffline === true || rawRecordedOffline === 'true';
+    const clientQuotedTotal =
+      rawClientQuotedTotal === null || rawClientQuotedTotal === undefined || rawClientQuotedTotal === ''
+        ? null
+        : round2(Number(rawClientQuotedTotal));
 
     // Digital payments are handled after the sale row exists, so they are
     // pulled out here and pushed through Paystack in phase two.
@@ -863,7 +862,12 @@ router.post(
             [pharmacyId, clientSaleId]
           );
           if (existing.rows.length > 0) {
-            return { saleId: existing.rows[0].id as string, duplicate: true, lines: [] as PosLine[] };
+            return {
+              saleId: existing.rows[0].id as string,
+              duplicate: true,
+              lines: [] as PosLine[],
+              stockWarnings: [] as Array<{ productName: string; sold: number; available: number }>,
+            };
           }
         }
 
@@ -913,8 +917,33 @@ router.post(
 
         // Stock deduction before the insert: a conditional UPDATE means the
         // last pack cannot be sold twice.
+        //
+        // A sale recorded offline is exempt from that guard. The goods have
+        // already physically left the shelf — possibly from a second till that
+        // was also disconnected, possibly against a stock count that had
+        // drifted. Refusing to record it would lose a real sale and leave the
+        // counter claiming stock that is not there. Instead the quantity is
+        // allowed to go negative and the line is reported back, because a
+        // negative count is the honest statement: "we sold more than we thought
+        // we had", which is what a stock-take then reconciles.
+        const stockWarnings: Array<{ productName: string; sold: number; available: number }> = [];
         for (const line of lines) {
           if (!line.inventoryId) continue;
+
+          if (recordedOffline) {
+            const before = await client.query('SELECT quantity FROM inventory WHERE id = $1', [
+              line.inventoryId,
+            ]);
+            const available = Number(before.rows[0]?.quantity ?? 0);
+            await client.query(
+              `UPDATE inventory SET quantity = quantity - $1, updated_at = NOW() WHERE id = $2`,
+              [line.quantity, line.inventoryId]
+            );
+            if (available < line.quantity) {
+              stockWarnings.push({ productName: line.productName, sold: line.quantity, available });
+            }
+            continue;
+          }
 
           const updated = await client.query(
             `UPDATE inventory
@@ -976,9 +1005,11 @@ router.post(
               served_by, approved_by, subtotal, discount_amount, discount_reason,
               taxable_base, exempt_amount, vat_amount, nhil_amount, getfund_amount,
               total_amount, pricing_mode, tax_rates, status, note,
-              prescription_id, nhis_claim_id, client_sale_id, completed_at)
+              prescription_id, nhis_claim_id, client_sale_id,
+              recorded_offline, client_recorded_at, client_quoted_total, completed_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
-                   CASE WHEN $19 = 'completed' THEN NOW() ELSE NULL END)
+                   $24,$25,$26,
+                   CASE WHEN $19 = 'completed' THEN COALESCE($25, NOW()) ELSE NULL END)
            RETURNING id`,
           [
             pharmacyId, receiptNumber, patientId, customerName, customerPhone,
@@ -988,6 +1019,7 @@ router.post(
             totalAmount, taxSettings.pricingMode, taxSettings.snapshot,
             settledByCash ? 'completed' : 'pending', note,
             prescriptionId, nhisClaimId, clientSaleId,
+            recordedOffline, clientRecordedAt, clientQuotedTotal,
           ]
         );
 
@@ -998,11 +1030,40 @@ router.post(
           await insertPayment(client, saleId, pharmacyId, userId, payment);
         }
 
+        if (recordedOffline) {
+          // A digital payment taken while the till was disconnected cannot be
+          // put through Paystack now: the customer has gone. In Ghana MoMo
+          // rides the phone network rather than the internet, so the money may
+          // genuinely have moved — but nothing here can confirm it. Record it
+          // as the till asserts it, marked unverified, and let the pharmacy
+          // reconcile against the network statement.
+          for (const payment of gatewayPayments) {
+            await insertPayment(client, saleId, pharmacyId, userId, {
+              ...payment,
+              gateway: null,
+              status: 'completed',
+              gateway_response: {
+                recorded_offline: true,
+                verified_by_gateway: false,
+                note: 'Taken while the till was offline; not confirmed with the payment provider.',
+              },
+            });
+          }
+        }
+
         // amount_paid and change_due are derived from the payment rows that
         // were actually written, never taken from the request.
         const settled = await settleSale(client, saleId);
 
-        return { saleId, duplicate: false, lines, totalAmount, receiptNumber, settled };
+        return {
+          saleId,
+          duplicate: false,
+          lines,
+          totalAmount,
+          receiptNumber,
+          settled,
+          stockWarnings,
+        };
       });
 
       // Phase two: gateway payments, deliberately outside the transaction so a
@@ -1014,7 +1075,7 @@ router.post(
         error?: string;
       }> = [];
 
-      if (!created.duplicate) {
+      if (!created.duplicate && !recordedOffline) {
         for (const payment of gatewayPayments) {
           const amount = round2(Number(payment.amount) || 0);
           try {
@@ -1047,6 +1108,34 @@ router.post(
         (result) => result.error || result.charge?.awaitingCustomerApproval
       );
 
+      // The server total is authoritative. If the till charged something else
+      // while it was disconnected, that gap has to be visible to the pharmacy
+      // rather than absorbed silently — it means a customer paid a figure that
+      // the VAT return will not agree with.
+      const serverTotal = round2(Number(sale.total_amount));
+      const quotedDifference =
+        clientQuotedTotal === null ? null : round2(clientQuotedTotal - serverTotal);
+      const totalMismatch = quotedDifference !== null && Math.abs(quotedDifference) >= 0.01;
+
+      if (totalMismatch) {
+        logger.warn('Offline sale synced with a total that differs from the server figure', {
+          pharmacyId,
+          saleId: created.saleId,
+          receiptNumber: sale.receipt_number,
+          clientQuotedTotal,
+          serverTotal,
+          difference: quotedDifference,
+        });
+      }
+      if (created.stockWarnings.length > 0) {
+        logger.warn('Offline sale drove stock below zero', {
+          pharmacyId,
+          saleId: created.saleId,
+          receiptNumber: sale.receipt_number,
+          items: created.stockWarnings,
+        });
+      }
+
       res.status(created.duplicate ? 200 : 201).json({
         success: true,
         message: created.duplicate
@@ -1058,6 +1147,19 @@ router.post(
               : 'Sale saved as pending — awaiting payment',
         data: sale,
         duplicate: created.duplicate,
+        offline: recordedOffline
+          ? {
+              recordedOffline: true,
+              quotedTotal: clientQuotedTotal,
+              difference: quotedDifference,
+              totalMismatch,
+              stockWarnings: created.stockWarnings,
+              unverifiedPayments: gatewayPayments.map((payment) => ({
+                method: payment.method,
+                amount: round2(Number(payment.amount) || 0),
+              })),
+            }
+          : null,
         gateway: gatewayResults.map((result) => ({
           method: result.method,
           amount: result.amount,
@@ -1150,7 +1252,7 @@ router.get('/sales', async (req: Request, res: Response) => {
     const page = Math.max(parseInt(req.query.page as string, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 25, 1), 100);
     const offset = (page - 1) * limit;
-    const { status, from, to, search, method, servedBy } = req.query;
+    const { status, from, to, search, method, servedBy, offline } = req.query;
 
     let whereClause = 'WHERE s.pharmacy_id = $1';
     const params: any[] = [pharmacyId];
@@ -1162,14 +1264,19 @@ router.get('/sales', async (req: Request, res: Response) => {
       idx++;
     }
     if (from) {
-      whereClause += ` AND s.created_at >= $${idx}`;
+      whereClause += ` AND ${saleTime('s')} >= $${idx}`;
       params.push(from);
       idx++;
     }
     if (to) {
-      whereClause += ` AND s.created_at < ($${idx}::timestamptz + INTERVAL '1 day')`;
+      whereClause += ` AND ${saleTime('s')} < ($${idx}::timestamptz + INTERVAL '1 day')`;
       params.push(to);
       idx++;
+    }
+    if (offline) {
+      // Lets the till history be filtered to sales that arrived from a queue,
+      // which are the ones a pharmacist needs to reconcile against the drawer.
+      whereClause += ` AND s.recorded_offline = true`;
     }
     if (servedBy) {
       whereClause += ` AND s.served_by = $${idx}`;
@@ -1200,6 +1307,8 @@ router.get('/sales', async (req: Request, res: Response) => {
         `SELECT s.id, s.receipt_number, s.status, s.subtotal, s.discount_amount, s.total_amount,
                 s.amount_paid, s.change_due, s.vat_amount, s.nhil_amount, s.getfund_amount,
                 s.customer_name, s.created_at, s.completed_at,
+                s.recorded_offline, s.client_recorded_at, s.client_quoted_total,
+                ${saleTime('s')} AS sale_time,
                 p.first_name || ' ' || p.last_name AS patient_name,
                 srv.first_name || ' ' || srv.last_name AS served_by_name,
                 (SELECT COUNT(*)::int FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
@@ -1210,7 +1319,7 @@ router.get('/sales', async (req: Request, res: Response) => {
            LEFT JOIN patients p ON s.patient_id = p.id
            LEFT JOIN users srv ON s.served_by = srv.id
            ${whereClause}
-          ORDER BY s.created_at DESC
+          ORDER BY ${saleTime('s')} DESC
           LIMIT $${idx} OFFSET $${idx + 1}`,
         [...params, limit, offset]
       ),

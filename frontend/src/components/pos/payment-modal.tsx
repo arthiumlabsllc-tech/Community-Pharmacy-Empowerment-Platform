@@ -32,6 +32,13 @@ interface PaymentModalProps {
   /** Called once the tenders cover the balance and the cashier confirms. */
   onComplete: () => void;
   submitting?: boolean;
+  /**
+   * True when there is no connection, so nothing here reaches a gateway and the
+   * sale will be queued on this device instead of posted. Changes what the
+   * cashier is told and what the confirm button says — recording money by hand
+   * and charging a wallet are different acts and must not read the same.
+   */
+  offline?: boolean;
 }
 
 const METHOD_ICON: Record<PaymentMethod, typeof Banknote> = {
@@ -88,6 +95,7 @@ export function PaymentModal({
   onTendersChange,
   onComplete,
   submitting = false,
+  offline = false,
 }: PaymentModalProps) {
   const [method, setMethod] = useState<PaymentMethod>('cash');
   const [amountText, setAmountText] = useState('');
@@ -182,10 +190,12 @@ export function PaymentModal({
       tender.momo_network = provider;
     }
 
-    if (method === 'card' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+    if (method === 'card' && gatewayConnected && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
       setError('A card payment needs the customer’s email for the Paystack checkout');
       return;
     }
+    // With no gateway there is no checkout to send, so an email is optional and
+    // only ever lands on the receipt.
     if (method === 'card') tender.email = email.trim();
 
     if (reference.trim()) tender.reference = reference.trim();
@@ -220,7 +230,7 @@ export function PaymentModal({
     <Modal
       open={open}
       onClose={submitting ? () => {} : onClose}
-      title="Take payment"
+      title={offline ? 'Record payment on this device' : 'Take payment'}
       description={`${money(remaining)} still to collect of ${money(balance)}`}
       size="lg"
       footer={
@@ -255,21 +265,37 @@ export function PaymentModal({
               onClick={onComplete}
               disabled={submitting || !canComplete}
             >
-              {submitting ? 'Recording…' : `Complete · ${money(balance)}`}
+              {submitting
+                ? 'Recording…'
+                : offline
+                  ? `Record on device · ${money(balance)}`
+                  : `Complete · ${money(balance)}`}
             </button>
           </div>
         </div>
       }
     >
-      {!gatewayConnected && (
-        <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-900">
-          <p className="font-medium">No payment gateway is connected.</p>
+      {offline ? (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900">
+          <p className="font-medium">This device is not connected to the server.</p>
           <p className="mt-0.5 text-xs">
-            MoMo and card will be recorded as <strong>manual</strong> — the app writes down what you
-            were handed, but it cannot charge a wallet or confirm the money arrived. Add
-            PAYSTACK_SECRET_KEY on the server to take real mobile money.
+            No payment can be charged from here. Mobile money and card are <strong>written
+            down</strong>, so confirm with the customer that the money actually moved — the
+            network&rsquo;s own statement is the only proof. The sale is queued on this device and
+            syncs when the connection returns.
           </p>
         </div>
+      ) : (
+        !gatewayConnected && (
+          <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-900">
+            <p className="font-medium">No payment gateway is connected.</p>
+            <p className="mt-0.5 text-xs">
+              MoMo and card will be recorded as <strong>manual</strong> — the app writes down what you
+              were handed, but it cannot charge a wallet or confirm the money arrived. Add
+              PAYSTACK_SECRET_KEY on the server to take real mobile money.
+            </p>
+          </div>
+        )
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -280,12 +306,15 @@ export function PaymentModal({
             <div className="grid grid-cols-3 gap-2">
               {methods.map((option) => {
                 const Icon = METHOD_ICON[option] ?? Banknote;
-                const disabled = (option === 'momo' || option === 'card') && !gatewayConnected;
+                // Nothing is disabled for want of a gateway. The backend records
+                // an unconfigured charge as an explicit manual payment — stored
+                // with gateway = NULL and counted separately in the reports — so
+                // graying the button out would only hide a method the till can
+                // honestly take, while the banner above says what it amounts to.
                 return (
                   <button
                     key={option}
                     type="button"
-                    disabled={disabled}
                     onClick={() => {
                       setMethod(option);
                       setError(null);
@@ -295,7 +324,7 @@ export function PaymentModal({
                       method === option
                         ? 'border-primary-500 bg-primary-50 text-primary-700'
                         : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
-                    } ${disabled ? 'cursor-not-allowed opacity-40' : ''}`}
+                    }`}
                   >
                     <Icon className="h-5 w-5" />
                     <span className="text-center leading-tight">
@@ -307,7 +336,9 @@ export function PaymentModal({
             </div>
             {(method === 'momo' || method === 'card') && !gatewayConnected && (
               <p className="mt-1 text-xs text-gray-500">
-                Recorded manually — no gateway key is configured on the server.
+                {offline
+                  ? 'Written down, not charged — nothing can reach a gateway from here.'
+                  : 'Recorded manually — no gateway key is configured on the server.'}
               </p>
             )}
           </div>
@@ -404,7 +435,7 @@ export function PaymentModal({
           {method === 'card' && (
             <div>
               <label className="label" htmlFor="card-email">
-                Customer email
+                Customer email{gatewayConnected ? '' : ' (optional)'}
               </label>
               <input
                 id="card-email"
@@ -415,7 +446,9 @@ export function PaymentModal({
                 placeholder="customer@example.com"
               />
               <p className="mt-1 text-xs text-gray-500">
-                Paystack sends a secure checkout link to this address.
+                {gatewayConnected
+                  ? 'Paystack sends a secure checkout link to this address.'
+                  : 'No checkout link can be sent, so this only appears on the receipt.'}
               </p>
             </div>
           )}

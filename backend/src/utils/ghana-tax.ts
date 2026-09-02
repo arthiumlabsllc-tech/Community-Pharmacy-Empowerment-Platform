@@ -58,6 +58,23 @@ export const EFFECTIVE_STANDARD_RATE =
 export type VatTreatment = 'standard' | 'exempt' | 'zero_rated';
 
 /**
+ * Normalises a stored or submitted classification.
+ *
+ * Anything that is not explicitly standard or zero-rated becomes exempt. That
+ * is the conservative direction for a pharmacy — the default assumes the stock
+ * is a Chapter 30 medicine — but it does mean unclassified toiletries or
+ * devices are sold without the levy they should carry, so the inventory screen
+ * flags a missing classification in amber rather than leaving it invisible.
+ *
+ * Lives here rather than in the POS routes because the offline till pricer has
+ * to apply the identical rule on the device, and both sides are pinned to it by
+ * the parity vectors in frontend/src/lib/offline/pricing-vectors.json.
+ */
+export function toVatTreatment(value: unknown): VatTreatment {
+  return value === 'standard' || value === 'zero_rated' ? value : 'exempt';
+}
+
+/**
  * Whether stored unit prices already contain the tax. Ghanaian retail shelf
  * prices are tax-inclusive, so the POS backs the tax out rather than adding it.
  */

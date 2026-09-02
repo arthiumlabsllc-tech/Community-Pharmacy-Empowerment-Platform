@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { auditLog } from '../middleware/audit.middleware';
 import logger from '../utils/logger';
+import { findReplay, readClientRequestId, recordReplay } from '../utils/idempotency';
 
 const router = Router();
 router.use(authenticate);
@@ -150,6 +151,14 @@ router.post(
   '/',
   async (req: Request, res: Response) => {
     try {
+      // Screenings are the most likely thing to be recorded during an outage —
+      // a BP or blood-sugar reading is taken at the counter whether or not the
+      // network is up. The key stops a replay from storing the reading twice,
+      // which would double-count it in the patient's trend.
+      const clientRequestId = readClientRequestId(req);
+      const replay = await findReplay(req.user!.pharmacyId, clientRequestId);
+      if (replay) return res.status(replay.status).json(replay.body);
+
       const { patient_id, type, systolic, diastolic, value, unit, notes, referred_to_clinic, referral_clinic, referral_notes } = req.body;
 
       if (!patient_id || !type || value === undefined || !unit) {
@@ -201,7 +210,17 @@ router.post(
          notes || null, referred_to_clinic || false, referral_clinic || null, referral_notes || null]
       );
 
-      res.status(201).json({ success: true, message: 'Screening recorded', data: result.rows[0] });
+      const payload = { success: true, message: 'Screening recorded', data: result.rows[0] };
+      await recordReplay({
+        pharmacyId: req.user!.pharmacyId,
+        clientRequestId,
+        userId: req.user!.userId,
+        endpoint: 'POST /screenings',
+        status: 201,
+        body: payload,
+      });
+
+      res.status(201).json(payload);
     } catch (error) {
       logger.error('Failed to record screening', error);
       res.status(500).json({ success: false, message: 'Failed to record screening' });

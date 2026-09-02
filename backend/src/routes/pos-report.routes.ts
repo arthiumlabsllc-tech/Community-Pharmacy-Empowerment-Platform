@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../middleware/auth.middleware';
 import { UserRole } from '../types';
 import logger from '../utils/logger';
 import { round2 } from '../utils/ghana-tax';
+import { saleTime } from '../utils/sale-time';
 
 /**
  * POS reporting.
@@ -32,7 +33,7 @@ interface Range {
 }
 
 /**
- * Builds the created_at window for a report. `from`/`to` are inclusive dates;
+ * Builds the sale-time window for a report. `from`/`to` are inclusive dates;
  * without them the window is the last N days (default 30). Parameters are
  * emitted starting at `startIdx` so the caller can keep $1 for pharmacy_id.
  */
@@ -40,11 +41,12 @@ function buildRange(req: Request, startIdx: number, alias = 's'): Range {
   const days = Math.min(Math.max(parseInt(req.query.days as string, 10) || 30, 1), 366);
   const from = typeof req.query.from === 'string' && req.query.from ? req.query.from : null;
   const to = typeof req.query.to === 'string' && req.query.to ? req.query.to : null;
+  const time = saleTime(alias);
 
   const sql =
-    ` AND ${alias}.created_at >= COALESCE($${startIdx}::timestamptz,` +
+    ` AND ${time} >= COALESCE($${startIdx}::timestamptz,` +
     ` date_trunc('day', NOW()) - ($${startIdx + 1} || ' days')::interval)` +
-    ` AND ${alias}.created_at < COALESCE($${startIdx + 2}::timestamptz + INTERVAL '1 day', NOW())`;
+    ` AND ${time} < COALESCE($${startIdx + 2}::timestamptz + INTERVAL '1 day', NOW())`;
 
   return { sql, params: [from, String(days), to], days, from, to };
 }
@@ -170,7 +172,7 @@ router.get('/daily', async (req: Request, res: Response) => {
     const range = buildRange(req, 2);
 
     const result = await db.query(
-      `SELECT to_char(s.created_at AT TIME ZONE 'Africa/Accra', 'YYYY-MM-DD') AS day,
+      `SELECT to_char(${saleTime('s')} AT TIME ZONE 'Africa/Accra', 'YYYY-MM-DD') AS day,
               COUNT(*)::int AS transactions,
               COALESCE(SUM(s.total_amount), 0)::numeric AS gross_sales,
               COALESCE(SUM(s.vat_amount + s.nhil_amount + s.getfund_amount), 0)::numeric AS tax,
