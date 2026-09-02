@@ -1,4 +1,9 @@
-﻿import express, { Application, Request, Response, NextFunction } from 'express';
+﻿import dns from 'dns';
+// Force IPv4 DNS resolution — Render free tier has no IPv6 connectivity,
+// and Supabase direct hosts resolve to IPv6 first on Node 17+
+dns.setDefaultResultOrder('ipv4first');
+
+import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
