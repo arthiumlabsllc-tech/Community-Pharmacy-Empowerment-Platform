@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuthStore } from '@/store/auth-store';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { api } from '@/lib/api';
 import {
@@ -23,6 +25,8 @@ interface Patient {
 }
 
 export default function PatientsPage() {
+  const { isAuthenticated } = useAuthStore();
+  const router = useRouter();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -30,8 +34,14 @@ export default function PatientsPage() {
   const [totalPages, setTotalPages] = useState(1);
 
   useEffect(() => {
+    if (!isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, router]);
+
+  useEffect(() => {
     loadPatients();
   }, [page, search]);
+
+  if (!isAuthenticated) return null;
 
   const loadPatients = async () => {
     setLoading(true);

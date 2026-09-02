@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuthStore } from '@/store/auth-store';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { api } from '@/lib/api';
 import {
@@ -23,6 +25,8 @@ interface InventoryItem {
 }
 
 export default function InventoryPage() {
+  const { isAuthenticated } = useAuthStore();
+  const router = useRouter();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -30,8 +34,14 @@ export default function InventoryPage() {
   const [activeTab, setActiveTab] = useState<'all' | 'low-stock' | 'expiring'>('all');
 
   useEffect(() => {
+    if (!isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, router]);
+
+  useEffect(() => {
     loadInventory();
   }, [activeTab]);
+
+  if (!isAuthenticated) return null;
 
   const loadInventory = async () => {
     setLoading(true);

@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth-store';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { StatCard } from '@/components/ui/stat-card';
@@ -9,7 +11,16 @@ import {
 } from 'lucide-react';
 
 export default function DashboardPage() {
-  const { user, pharmacy } = useAuthStore();
+  const { user, pharmacy, isAuthenticated } = useAuthStore();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      router.replace('/login');
+    }
+  }, [isAuthenticated, router]);
+
+  if (!isAuthenticated) return null;
 
   return (
     <DashboardLayout>
