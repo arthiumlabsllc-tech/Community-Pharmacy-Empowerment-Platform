@@ -102,7 +102,7 @@ CREATE INDEX idx_patients_pharmacy ON patients(pharmacy_id);
 CREATE INDEX idx_patients_nhis ON patients(nhis_number);
 CREATE INDEX idx_patients_name ON patients(first_name, last_name);
 CREATE INDEX idx_patients_phone ON patients(phone);
-CREATE INDEX idx_patients_search ON patients(first_name gin_trgm_ops, last_name gin_trgm_ops);
+CREATE INDEX idx_patients_search ON patients USING gin(first_name gin_trgm_ops, last_name gin_trgm_ops);
 
 -- ============ INVENTORY ============
 CREATE TABLE inventory (
