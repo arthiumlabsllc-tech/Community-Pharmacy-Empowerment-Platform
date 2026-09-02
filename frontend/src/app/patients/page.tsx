@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth-store';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { api } from '@/lib/api';
 import {
@@ -25,7 +26,8 @@ interface Patient {
 }
 
 export default function PatientsPage() {
-  const { isAuthenticated, _hasHydrated } = useAuthStore();
+  const { isAuthenticated } = useAuthStore();
+  const hydrated = useHydrated();
   const router = useRouter();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,14 +55,16 @@ export default function PatientsPage() {
   };
 
   useEffect(() => {
-    if (_hasHydrated && !isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, _hasHydrated, router]);
+    if (hydrated && !isAuthenticated) router.replace('/login');
+  }, [hydrated, isAuthenticated, router]);
 
   useEffect(() => {
-    loadPatients();
-  }, [page, search]);
+    // Only fetch once the persisted session is available — firing early
+    // sends a tokenless request, and the 401 refresh failure logs the user out
+    if (hydrated && isAuthenticated) loadPatients();
+  }, [page, search, hydrated, isAuthenticated]);
 
-  if (!_hasHydrated || !isAuthenticated) return null;
+  if (!hydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

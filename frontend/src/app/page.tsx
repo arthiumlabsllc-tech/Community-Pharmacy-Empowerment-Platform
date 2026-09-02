@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth-store';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { StatCard } from '@/components/ui/stat-card';
 import {
@@ -11,16 +12,17 @@ import {
 } from 'lucide-react';
 
 export default function DashboardPage() {
-  const { user, pharmacy, isAuthenticated, _hasHydrated } = useAuthStore();
+  const { user, pharmacy, isAuthenticated } = useAuthStore();
+  const hydrated = useHydrated();
   const router = useRouter();
 
   useEffect(() => {
-    if (_hasHydrated && !isAuthenticated) {
+    if (hydrated && !isAuthenticated) {
       router.replace('/login');
     }
-  }, [isAuthenticated, _hasHydrated, router]);
+  }, [hydrated, isAuthenticated, router]);
 
-  if (!_hasHydrated || !isAuthenticated) return null;
+  if (!hydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

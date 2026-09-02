@@ -3,19 +3,21 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth-store';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { User, Building2, Bell, Shield, Globe, Palette } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function SettingsPage() {
-  const { isAuthenticated, user, pharmacy, _hasHydrated } = useAuthStore();
+  const { isAuthenticated, user, pharmacy } = useAuthStore();
+  const hydrated = useHydrated();
   const router = useRouter();
 
   useEffect(() => {
-    if (_hasHydrated && !isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, _hasHydrated, router]);
+    if (hydrated && !isAuthenticated) router.replace('/login');
+  }, [hydrated, isAuthenticated, router]);
 
-  if (!_hasHydrated || !isAuthenticated) return null;
+  if (!hydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

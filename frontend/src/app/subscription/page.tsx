@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth-store';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { CreditCard, Check, Star } from 'lucide-react';
 
@@ -38,14 +39,15 @@ const plans = [
 ];
 
 export default function SubscriptionPage() {
-  const { isAuthenticated, _hasHydrated } = useAuthStore();
+  const { isAuthenticated } = useAuthStore();
+  const hydrated = useHydrated();
   const router = useRouter();
 
   useEffect(() => {
-    if (_hasHydrated && !isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, _hasHydrated, router]);
+    if (hydrated && !isAuthenticated) router.replace('/login');
+  }, [hydrated, isAuthenticated, router]);
 
-  if (!_hasHydrated || !isAuthenticated) return null;
+  if (!hydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

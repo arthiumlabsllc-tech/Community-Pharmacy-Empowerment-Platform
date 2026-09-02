@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/auth-store';
+import { useHydrated } from '@/hooks/use-hydrated';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { api } from '@/lib/api';
 import {
@@ -25,7 +26,8 @@ interface InventoryItem {
 }
 
 export default function InventoryPage() {
-  const { isAuthenticated, _hasHydrated } = useAuthStore();
+  const { isAuthenticated } = useAuthStore();
+  const hydrated = useHydrated();
   const router = useRouter();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,14 +62,16 @@ export default function InventoryPage() {
   };
 
   useEffect(() => {
-    if (_hasHydrated && !isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, _hasHydrated, router]);
+    if (hydrated && !isAuthenticated) router.replace('/login');
+  }, [hydrated, isAuthenticated, router]);
 
   useEffect(() => {
-    loadInventory();
-  }, [activeTab]);
+    // Only fetch once the persisted session is available — firing early
+    // sends a tokenless request, and the 401 refresh failure logs the user out
+    if (hydrated && isAuthenticated) loadInventory();
+  }, [activeTab, hydrated, isAuthenticated]);
 
-  if (!_hasHydrated || !isAuthenticated) return null;
+  if (!hydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>
