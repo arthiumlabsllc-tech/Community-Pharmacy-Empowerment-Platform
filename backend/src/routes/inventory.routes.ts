@@ -68,19 +68,27 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
-// ============ GET SINGLE ITEM ============
-router.get('/:id', validate([param('id').isUUID()]), async (req: Request, res: Response) => {
+// ============ INVENTORY SUMMARY ============
+router.get('/summary', async (req: Request, res: Response) => {
   try {
     const result = await db.query(
-      'SELECT * FROM inventory WHERE id = $1 AND pharmacy_id = $2',
-      [req.params.id, req.user!.pharmacyId]
+      `SELECT
+         COUNT(*)::int AS total_items,
+         COALESCE(SUM(quantity), 0)::int AS total_units,
+         COALESCE(SUM(quantity * unit_price), 0)::numeric AS stock_value,
+         COUNT(*) FILTER (WHERE quantity <= reorder_level)::int AS low_stock,
+         COUNT(*) FILTER (WHERE quantity = 0)::int AS out_of_stock,
+         COUNT(*) FILTER (WHERE expiry_date < CURRENT_DATE)::int AS expired,
+         COUNT(*) FILTER (WHERE expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '30 days')::int AS expiring_30d,
+         COUNT(*) FILTER (WHERE expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL '90 days')::int AS expiring_90d
+       FROM inventory
+       WHERE pharmacy_id = $1 AND is_active = true`,
+      [req.user!.pharmacyId]
     );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Item not found' });
-    }
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to load item' });
+    logger.error('Failed to fetch inventory summary', error);
+    res.status(500).json({ success: false, message: 'Failed to load inventory summary' });
   }
 });
 
@@ -296,6 +304,24 @@ router.get('/categories/list', async (req: Request, res: Response) => {
     res.json({ success: true, data: result.rows });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to load categories' });
+  }
+});
+
+// ============ GET SINGLE ITEM ============
+// Declared last among the GET routes: "/:id" would otherwise swallow
+// /summary, /expiring, /low-stock and /categories/list and fail UUID validation.
+router.get('/:id', validate([param('id').isUUID()]), async (req: Request, res: Response) => {
+  try {
+    const result = await db.query(
+      'SELECT * FROM inventory WHERE id = $1 AND pharmacy_id = $2',
+      [req.params.id, req.user!.pharmacyId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Item not found' });
+    }
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load item' });
   }
 });
 

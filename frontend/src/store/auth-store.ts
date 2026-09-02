@@ -28,6 +28,7 @@ interface AuthState {
   setAuth: (data: { accessToken: string; refreshToken: string; user: User; pharmacy: Pharmacy }) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
+  updatePharmacy: (pharmacy: Partial<Pharmacy>) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -60,6 +61,11 @@ export const useAuthStore = create<AuthState>()(
       updateUser: (updates) =>
         set((state) => ({
           user: state.user ? { ...state.user, ...updates } : null,
+        })),
+
+      updatePharmacy: (updates) =>
+        set((state) => ({
+          pharmacy: state.pharmacy ? { ...state.pharmacy, ...updates } : null,
         })),
     }),
     {

@@ -131,12 +131,12 @@ router.post(
       const id = uuidv4();
       const payRef = reference || `PAY-${Date.now()}`;
 
-      // In production, this would call Paystack/Stripe/MoMo API
-      // For now, record the payment as pending
+      // No payment gateway is connected yet, so the payment is recorded as
+      // pending rather than pretending the money was collected.
       const result = await db.query(
         `INSERT INTO payments (id, pharmacy_id, subscription_id, amount, currency, method, reference, status, metadata)
          VALUES ($1, $2, (SELECT id FROM subscriptions WHERE pharmacy_id = $2 ORDER BY created_at DESC LIMIT 1),
-                 $3, 'GHS', $4, $5, 'completed', $6)
+                 $3, 'GHS', $4, $5, 'pending', $6)
          RETURNING *`,
         [id, req.user!.pharmacyId, amount, method, payRef, metadata || {}]
       );
@@ -150,7 +150,7 @@ router.post(
 
       res.status(201).json({
         success: true,
-        message: 'Payment processed successfully',
+        message: 'Payment recorded as pending. It will be marked completed once a payment gateway confirms it.',
         data: result.rows[0],
       });
     } catch (error) {

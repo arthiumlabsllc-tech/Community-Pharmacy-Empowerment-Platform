@@ -152,6 +152,96 @@ router.put('/:id', validate([param('id').isUUID()]), async (req: Request, res: R
   }
 });
 
+// ============ PATIENT OVERVIEW ============
+// Everything the patient profile page needs in a single round trip.
+router.get('/:id/overview', validate([param('id').isUUID()]), async (req: Request, res: Response) => {
+  try {
+    const pharmacyId = req.user!.pharmacyId;
+    const patientId = req.params.id;
+
+    const patientResult = await db.query(
+      'SELECT * FROM patients WHERE id = $1 AND pharmacy_id = $2',
+      [patientId, pharmacyId]
+    );
+    if (patientResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Patient not found' });
+    }
+
+    const [prescriptions, screenings, claims, consultations, reminders] = await Promise.all([
+      db.query(
+        `SELECT * FROM prescriptions
+         WHERE patient_id = $1 AND pharmacy_id = $2
+         ORDER BY issue_date DESC LIMIT 50`,
+        [patientId, pharmacyId]
+      ),
+      db.query(
+        `SELECT s.*, u.first_name || ' ' || u.last_name as recorded_by_name
+         FROM screenings s
+         JOIN users u ON s.recorded_by = u.id
+         WHERE s.patient_id = $1 AND s.pharmacy_id = $2
+         ORDER BY s.recorded_at DESC LIMIT 50`,
+        [patientId, pharmacyId]
+      ),
+      db.query(
+        `SELECT id, claim_number, status, total_amount, nhis_approved_amount,
+                patient_copay, rejection_reason, submitted_at, approved_at, paid_at, created_at
+         FROM nhis_claims
+         WHERE patient_id = $1 AND pharmacy_id = $2
+         ORDER BY created_at DESC LIMIT 50`,
+        [patientId, pharmacyId]
+      ),
+      db.query(
+        `SELECT c.*, u.first_name || ' ' || u.last_name as pharmacist_name
+         FROM consultations c
+         JOIN users u ON c.pharmacist_id = u.id
+         WHERE c.patient_id = $1 AND c.pharmacy_id = $2
+         ORDER BY c.scheduled_at DESC LIMIT 50`,
+        [patientId, pharmacyId]
+      ),
+      db.query(
+        `SELECT id, type, title, message, scheduled_at, sent_at, status, recurrence, is_active
+         FROM reminders
+         WHERE patient_id = $1 AND pharmacy_id = $2 AND is_active = true
+         ORDER BY scheduled_at DESC LIMIT 50`,
+        [patientId, pharmacyId]
+      ),
+    ]);
+
+    const prescriptionRows = prescriptions.rows;
+    const filled = prescriptionRows.filter((row: any) => row.status === 'filled').length;
+    const pendingReminders = reminders.rows.filter((row: any) => row.status === 'pending').length;
+
+    res.json({
+      success: true,
+      data: {
+        patient: patientResult.rows[0],
+        prescriptions: prescriptionRows,
+        screenings: screenings.rows,
+        claims: claims.rows,
+        consultations: consultations.rows,
+        reminders: reminders.rows,
+        stats: {
+          prescriptions_total: prescriptionRows.length,
+          prescriptions_filled: filled,
+          screenings_total: screenings.rows.length,
+          claims_total: claims.rows.length,
+          reminders_pending: pendingReminders,
+          last_visit: lastAttendedVisit(consultations.rows),
+        },
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to load patient overview', error);
+    res.status(500).json({ success: false, message: 'Failed to load patient overview' });
+  }
+});
+
+/** Most recent completed or in-progress consultation, used as the patient's "last visit". */
+function lastAttendedVisit(rows: any[]): string | null {
+  const attended = rows.find((row) => row.status === 'completed' || row.status === 'in_progress');
+  return attended ? attended.scheduled_at : null;
+}
+
 // ============ PATIENT PRESCRIPTIONS ============
 router.get('/:id/prescriptions', validate([param('id').isUUID()]), async (req: Request, res: Response) => {
   try {

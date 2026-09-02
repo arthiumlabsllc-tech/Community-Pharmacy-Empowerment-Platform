@@ -273,8 +273,69 @@ router.get('/performance-score', async (req: Request, res: Response) => {
   }
 });
 
+// ============ RECENT ACTIVITY FEED ============
+// Merges the pharmacy's own records into a single timeline. Scoped to the
+// authenticated user's pharmacy, so it is safe for all staff roles.
+router.get('/activity', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 10, 1), 50);
+
+    const result = await db.query(
+      `SELECT kind, title, detail, at FROM (
+         SELECT 'patient'::text AS kind,
+                'New patient registered'::text AS title,
+                p.first_name || ' ' || p.last_name AS detail,
+                p.created_at AS at
+         FROM patients p
+         WHERE p.pharmacy_id = $1
+
+         UNION ALL
+         SELECT 'screening', 'Health screening recorded',
+                p.first_name || ' ' || p.last_name || ' - ' || replace(s.type::text, '_', ' ') ||
+                  ' (' || s.risk_level::text || ' risk)',
+                s.recorded_at
+         FROM screenings s JOIN patients p ON p.id = s.patient_id
+         WHERE s.pharmacy_id = $1
+
+         UNION ALL
+         SELECT 'claim', 'NHIS claim ' || c.status::text,
+                COALESCE(c.claim_number, 'unnumbered') || ' - ' || p.first_name || ' ' || p.last_name ||
+                  ' - GHS ' || ROUND(c.total_amount, 2)::text,
+                COALESCE(c.updated_at, c.created_at)
+         FROM nhis_claims c JOIN patients p ON p.id = c.patient_id
+         WHERE c.pharmacy_id = $1
+
+         UNION ALL
+         SELECT 'consultation', 'Consultation ' || c.status::text,
+                p.first_name || ' ' || p.last_name || ' - ' || replace(c.type::text, '_', ' '),
+                COALESCE(c.updated_at, c.created_at)
+         FROM consultations c JOIN patients p ON p.id = c.patient_id
+         WHERE c.pharmacy_id = $1
+
+         UNION ALL
+         SELECT 'prescription', 'Prescription ' || pr.status::text,
+                p.first_name || ' ' || p.last_name ||
+                  COALESCE(' - ' || pr.diagnosis, ''),
+                COALESCE(pr.filled_date, pr.updated_at, pr.created_at)
+         FROM prescriptions pr JOIN patients p ON p.id = pr.patient_id
+         WHERE pr.pharmacy_id = $1
+       ) activity
+       ORDER BY at DESC NULLS LAST
+       LIMIT $2`,
+      [req.user!.pharmacyId, limit]
+    );
+
+    res.json({ success: true, data: result.rows });
+  } catch (error) {
+    logger.error('Failed to fetch pharmacy activity', error);
+    res.status(500).json({ success: false, message: 'Failed to load recent activity' });
+  }
+});
+
 // ============ LIST PHARMACY STAFF ============
-router.get('/staff', async (req: Request, res: Response) => {
+// Readable by the owner and pharmacists only — cashier-level staff must not be
+// able to enumerate their colleagues' contact details.
+router.get('/staff', authorize(UserRole.PHARMACY_OWNER, UserRole.PHARMACIST), async (req: Request, res: Response) => {
   try {
     const result = await db.query(
       `SELECT id, first_name, last_name, email, phone, role, avatar_url, is_active, last_login_at, created_at
@@ -326,5 +387,79 @@ router.post(
     }
   }
 );
+
+// ============ UPDATE STAFF MEMBER (role / active status) ============
+router.put(
+  '/staff/:id',
+  authorize(UserRole.PHARMACY_OWNER),
+  validate([
+    body('role').optional().isIn(['pharmacist', 'staff']).withMessage('Role must be pharmacist or staff'),
+    body('is_active').optional().isBoolean().withMessage('is_active must be a boolean'),
+  ]),
+  async (req: Request, res: Response) => {
+    try {
+      const { role, is_active, phone, first_name, last_name } = req.body;
+
+      // Prevent an owner from demoting or deactivating their own account
+      if (req.params.id === req.user!.userId && (role || is_active === false)) {
+        return res.status(400).json({
+          success: false,
+          message: 'You cannot change your own role or deactivate your own account',
+        });
+      }
+
+      const result = await db.query(
+        `UPDATE users SET
+          role = COALESCE($3, role),
+          is_active = COALESCE($4, is_active),
+          phone = COALESCE($5, phone),
+          first_name = COALESCE($6, first_name),
+          last_name = COALESCE($7, last_name)
+         WHERE id = $1 AND pharmacy_id = $2
+         RETURNING id, first_name, last_name, email, phone, role, is_active, last_login_at`,
+        [req.params.id, req.user!.pharmacyId, role, is_active, phone, first_name, last_name]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Staff member not found' });
+      }
+
+      res.json({ success: true, message: 'Staff member updated', data: result.rows[0] });
+    } catch (error) {
+      logger.error('Failed to update staff member', error);
+      res.status(500).json({ success: false, message: 'Failed to update staff member' });
+    }
+  }
+);
+
+// ============ STAFF PERFORMANCE SUMMARY ============
+router.get('/staff-performance', authorize(UserRole.PHARMACY_OWNER, UserRole.PHARMACIST), async (req: Request, res: Response) => {
+  try {
+    const days = Math.min(Math.max(parseInt(req.query.period as string, 10) || 30, 1), 365);
+
+    const result = await db.query(
+      `SELECT u.id, u.first_name, u.last_name, u.role, u.is_active,
+              COUNT(DISTINCT pr.id)::int as prescriptions_filled,
+              COUNT(DISTINCT s.id)::int as screenings_recorded,
+              COUNT(DISTINCT c.id)::int as consultations_held
+       FROM users u
+       LEFT JOIN prescriptions pr ON pr.filled_by = u.id
+         AND pr.filled_date >= NOW() - ($1 || ' days')::interval
+       LEFT JOIN screenings s ON s.recorded_by = u.id
+         AND s.recorded_at >= NOW() - ($1 || ' days')::interval
+       LEFT JOIN consultations c ON c.pharmacist_id = u.id
+         AND c.scheduled_at >= NOW() - ($1 || ' days')::interval
+       WHERE u.pharmacy_id = $2
+       GROUP BY u.id, u.first_name, u.last_name, u.role, u.is_active
+       ORDER BY prescriptions_filled DESC, screenings_recorded DESC`,
+      [String(days), req.user!.pharmacyId]
+    );
+
+    res.json({ success: true, data: result.rows, period_days: days });
+  } catch (error) {
+    logger.error('Failed to load staff performance', error);
+    res.status(500).json({ success: false, message: 'Failed to load staff performance' });
+  }
+});
 
 export default router;

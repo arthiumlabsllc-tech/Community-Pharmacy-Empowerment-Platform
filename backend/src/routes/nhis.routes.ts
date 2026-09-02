@@ -27,8 +27,10 @@ router.post(
         [nhis_number, req.user!.pharmacyId]
       );
 
-      // In production, this would call the NHIS API
-      // For now, we simulate the eligibility check
+      // In production, this would call the NHIA ClaimsIT eligibility service.
+      // That integration does not exist yet, so the response is explicitly
+      // flagged as unverified — a pharmacy must not treat it as a real
+      // confirmation of cover.
       const eligibilityResponse = {
         eligible: true,
         nhis_number,
@@ -40,9 +42,12 @@ router.post(
         coverage_level: 'basic',
         patient_found: localPatient.rows.length > 0,
         patient_id: localPatient.rows[0]?.id || null,
+        verified: false,
+        source: 'simulated',
+        note: 'NHIA ClaimsIT is not connected yet. This is not a real eligibility confirmation — verify the member\'s card or call NHIA before dispensing.',
       };
 
-      // TODO: Replace with actual NHIS API call
+      // TODO: Replace with actual NHIA ClaimsIT API call
       // const nhisResponse = await nhisService.checkEligibility(nhis_number);
 
       res.json({ success: true, data: eligibilityResponse });
@@ -78,13 +83,15 @@ router.post(
          ClaimStatus.SUBMITTED]
       );
 
-      // TODO: In production, submit to NHIS API asynchronously via Bull queue
+      // TODO: In production, transmit to NHIA ClaimsIT asynchronously via a
+      // Bull queue. Until that exists the claim only lives in this database,
+      // so the response says so explicitly rather than implying it was sent.
       // await claimQueue.add('submit', { claimId: id });
 
       res.status(201).json({
         success: true,
-        message: 'Claim submitted successfully',
-        data: result.rows[0],
+        message: 'Claim recorded locally. It has NOT been transmitted to NHIA — ClaimsIT integration is not connected yet.',
+        data: { ...result.rows[0], transmitted: false },
       });
     } catch (error) {
       logger.error('Failed to submit claim', error);
@@ -100,7 +107,7 @@ router.get('/claims', async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const offset = (page - 1) * limit;
-    const { status, from, to } = req.query;
+    const { status, from, to, search } = req.query;
 
     let whereClause = 'WHERE c.pharmacy_id = $1';
     const params: any[] = [pharmacyId];
@@ -122,8 +129,18 @@ router.get('/claims', async (req: Request, res: Response) => {
       idx++;
     }
 
+    // The list query already joins patients as "p"; the count query adds the
+    // same join only when a patient-scoped search term is present.
+    let joinClause = '';
+    if (search) {
+      joinClause = 'JOIN patients p ON c.patient_id = p.id';
+      whereClause += ` AND (c.claim_number ILIKE $${idx} OR p.first_name ILIKE $${idx} OR p.last_name ILIKE $${idx} OR p.nhis_number ILIKE $${idx})`;
+      params.push(`%${search}%`);
+      idx++;
+    }
+
     const [countResult, dataResult] = await Promise.all([
-      db.query(`SELECT COUNT(*) as total FROM nhis_claims c ${whereClause}`, params),
+      db.query(`SELECT COUNT(*) as total FROM nhis_claims c ${joinClause} ${whereClause}`, params),
       db.query(
         `SELECT c.*, p.first_name || ' ' || p.last_name as patient_name, p.nhis_number
          FROM nhis_claims c

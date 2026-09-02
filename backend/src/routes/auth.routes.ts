@@ -278,6 +278,44 @@ router.put(
   }
 );
 
+// ============ UPDATE OWN PROFILE ============
+router.put(
+  '/profile',
+  authenticate,
+  validate([
+    body('first_name').optional().trim().notEmpty().withMessage('First name cannot be empty'),
+    body('last_name').optional().trim().notEmpty().withMessage('Last name cannot be empty'),
+    body('phone').optional().trim().notEmpty().withMessage('Phone cannot be empty'),
+    body('preferred_language').optional().isIn(['en', 'tw', 'ee']).withMessage('Language must be en, tw or ee'),
+  ]),
+  async (req: Request, res: Response) => {
+    try {
+      const { first_name, last_name, phone, preferred_language, avatar_url } = req.body;
+
+      const result = await db.query(
+        `UPDATE users SET
+          first_name = COALESCE($2, first_name),
+          last_name = COALESCE($3, last_name),
+          phone = COALESCE($4, phone),
+          preferred_language = COALESCE($5, preferred_language),
+          avatar_url = COALESCE($6, avatar_url)
+         WHERE id = $1
+         RETURNING id, first_name, last_name, email, phone, role, avatar_url, preferred_language`,
+        [req.user!.userId, first_name, last_name, phone, preferred_language, avatar_url]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+      }
+
+      res.json({ success: true, message: 'Profile updated', data: result.rows[0] });
+    } catch (error) {
+      logger.error('Failed to update profile', error);
+      res.status(500).json({ success: false, message: 'Failed to update profile' });
+    }
+  }
+);
+
 // ============ ME (Current User Profile) ============
 router.get('/me', authenticate, async (req: Request, res: Response) => {
   try {

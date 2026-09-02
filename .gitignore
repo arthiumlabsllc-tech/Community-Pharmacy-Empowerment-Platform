@@ -4,6 +4,13 @@ build/
 .next/
 out/
 
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Cloudflare Pages (next-on-pages) output
+.vercel/
+.wrangler/
+
 # Environment files
 .env
 .env.local

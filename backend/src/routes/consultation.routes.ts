@@ -56,6 +56,58 @@ router.get('/', async (req: Request, res: Response) => {
   }
 });
 
+// ============ CONSULTATION SUMMARY ============
+// Registered before any parametric route so "summary" is never treated as an :id.
+router.get('/summary', async (req: Request, res: Response) => {
+  try {
+    const pharmacyId = req.user!.pharmacyId;
+
+    const [byStatus, byType, today, upcoming] = await Promise.all([
+      db.query(
+        `SELECT status, COUNT(*)::int as count
+         FROM consultations WHERE pharmacy_id = $1
+         GROUP BY status`,
+        [pharmacyId]
+      ),
+      db.query(
+        `SELECT type, COUNT(*)::int as count
+         FROM consultations WHERE pharmacy_id = $1
+         GROUP BY type`,
+        [pharmacyId]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int as total
+         FROM consultations
+         WHERE pharmacy_id = $1 AND scheduled_at::date = CURRENT_DATE`,
+        [pharmacyId]
+      ),
+      db.query(
+        `SELECT COUNT(*)::int as total
+         FROM consultations
+         WHERE pharmacy_id = $1 AND status = 'scheduled' AND scheduled_at >= NOW()`,
+        [pharmacyId]
+      ),
+    ]);
+
+    const counts: Record<string, number> = { scheduled: 0, in_progress: 0, completed: 0, cancelled: 0, no_show: 0 };
+    byStatus.rows.forEach((row) => { counts[row.status] = row.count; });
+
+    res.json({
+      success: true,
+      data: {
+        total: byStatus.rows.reduce((sum, row) => sum + row.count, 0),
+        today: today.rows[0].total,
+        upcoming: upcoming.rows[0].total,
+        by_status: counts,
+        by_type: byType.rows,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to fetch consultation summary', error);
+    res.status(500).json({ success: false, message: 'Failed to load consultation summary' });
+  }
+});
+
 // ============ CREATE CONSULTATION ============
 router.post(
   '/',

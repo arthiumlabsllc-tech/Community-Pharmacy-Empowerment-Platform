@@ -197,6 +197,17 @@
   @apply bg-gray-400;
 }
 
+/* Accessibility: base font size chosen in Settings > Language & Accessibility.
+   Tailwind's rem-based utilities scale from the root font size, so this
+   enlarges the whole interface rather than a single component. */
+html[data-font-size='large'] {
+  font-size: 18px;
+}
+
+html[data-font-size='extra-large'] {
+  font-size: 20px;
+}
+
 /* Print styles */
 @media print {
   .no-print { display: none !important; }

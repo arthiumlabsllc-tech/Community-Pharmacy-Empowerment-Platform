@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-provider';
 import { OfflineIndicator } from '@/components/offline-indicator';
+import { AppBootstrap } from '@/components/app-bootstrap';
 
 export const metadata: Metadata = {
   title: 'Pharmacy Empowerment Platform',
@@ -31,6 +32,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="min-h-screen">
         <AuthProvider>
+          <AppBootstrap />
           <OfflineIndicator />
           {children}
           <Toaster
