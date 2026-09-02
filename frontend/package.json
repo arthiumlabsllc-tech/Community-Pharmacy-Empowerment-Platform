@@ -13,9 +13,9 @@
     "pages:deploy": "npx wrangler pages deploy .vercel/output/static"
   },
   "dependencies": {
-    "next": "^14.3.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "zustand": "^4.4.7",
     "recharts": "^2.10.3",
     "lucide-react": "^0.303.0",
@@ -27,8 +27,8 @@
     "@cloudflare/next-on-pages": "^1.8.5",
     "wrangler": "^3.22.0",
     "@types/node": "^20.10.6",
-    "@types/react": "^18.2.46",
-    "@types/react-dom": "^18.2.18",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.16",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.4.0",
