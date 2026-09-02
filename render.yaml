@@ -1,14 +1,15 @@
-# Render.com Blueprint for Backend
+# Render.com Blueprint — Backend + Frontend
 # Deploy at: https://render.com → New → Blueprint
 
 services:
+  # ============ BACKEND API ============
   - type: web
     name: pharmacy-platform-api
-    runtime: node
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
     region: oregon
     plan: free
-    buildCommand: cd backend && npm install && npm run build
-    startCommand: cd backend && node dist/server.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
@@ -16,18 +17,32 @@ services:
       - key: PORT
         value: 5000
       - key: DATABASE_URL
-        sync: false  # Set manually from Supabase connection string
+        sync: false
       - key: REDIS_URL
-        sync: false  # Set manually from Upstash connection string
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
       - key: CORS_ORIGIN
-        sync: false  # Set to your Vercel frontend URL
+        sync: false
       - key: PAYSTACK_SECRET_KEY
         sync: false
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
         sync: false
+
+  # ============ FRONTEND ============
+  - type: web
+    name: pharmacy-platform-web
+    runtime: docker
+    dockerfilePath: frontend/Dockerfile
+    dockerContext: frontend
+    region: oregon
+    plan: free
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      - key: NEXT_PUBLIC_APP_NAME
+        value: Pharmacy Empowerment Platform
