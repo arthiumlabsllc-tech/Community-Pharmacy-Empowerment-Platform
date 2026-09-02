@@ -2,11 +2,15 @@ import { Pool, PoolClient, QueryResult } from 'pg';
 import config from '../config';
 import logger from '../utils/logger';
 
+const isLocalDb = config.database.url.includes('localhost') || config.database.url.includes('127.0.0.1');
+
 const pool = new Pool({
   connectionString: config.database.url,
   max: config.database.poolSize,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
+  // Cloud databases (Supabase, Render, etc.) require SSL
+  ssl: isLocalDb ? undefined : { rejectUnauthorized: false },
 });
 
 pool.on('error', (err) => {

@@ -100,10 +100,10 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   logger.error('Unhandled error', {
     message: err.message,
     stack: err.stack,
-    statusCode: err.statusCode || 500,
+    statusCode: err.statusCode || err.status || 500,
   });
 
-  const statusCode = err.statusCode || 500;
+  const statusCode = err.statusCode || err.status || 500;
   const message = config.env === 'production'
     ? 'An unexpected error occurred'
     : err.message;
