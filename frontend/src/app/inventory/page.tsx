@@ -33,16 +33,6 @@ export default function InventoryPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [activeTab, setActiveTab] = useState<'all' | 'low-stock' | 'expiring'>('all');
 
-  useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
-
-  useEffect(() => {
-    loadInventory();
-  }, [activeTab]);
-
-  if (!isAuthenticated) return null;
-
   const loadInventory = async () => {
     setLoading(true);
     try {
@@ -68,6 +58,16 @@ export default function InventoryPage() {
     if (item.quantity === 0) return { label: 'Out of Stock', class: 'badge-danger' };
     return { label: 'In Stock', class: 'badge-success' };
   };
+
+  useEffect(() => {
+    if (!isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, router]);
+
+  useEffect(() => {
+    loadInventory();
+  }, [activeTab]);
+
+  if (!isAuthenticated) return null;
 
   return (
     <DashboardLayout>

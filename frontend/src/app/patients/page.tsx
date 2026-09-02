@@ -33,16 +33,6 @@ export default function PatientsPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
-
-  useEffect(() => {
-    loadPatients();
-  }, [page, search]);
-
-  if (!isAuthenticated) return null;
-
   const loadPatients = async () => {
     setLoading(true);
     try {
@@ -61,6 +51,16 @@ export default function PatientsPage() {
     const age = Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000));
     return `${age} yrs`;
   };
+
+  useEffect(() => {
+    if (!isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, router]);
+
+  useEffect(() => {
+    loadPatients();
+  }, [page, search]);
+
+  if (!isAuthenticated) return null;
 
   return (
     <DashboardLayout>
