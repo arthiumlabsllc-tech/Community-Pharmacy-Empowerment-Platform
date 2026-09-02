@@ -11,16 +11,16 @@ import {
 } from 'lucide-react';
 
 export default function DashboardPage() {
-  const { user, pharmacy, isAuthenticated } = useAuthStore();
+  const { user, pharmacy, isAuthenticated, _hasHydrated } = useAuthStore();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (_hasHydrated && !isAuthenticated) {
       router.replace('/login');
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, _hasHydrated, router]);
 
-  if (!isAuthenticated) return null;
+  if (!_hasHydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

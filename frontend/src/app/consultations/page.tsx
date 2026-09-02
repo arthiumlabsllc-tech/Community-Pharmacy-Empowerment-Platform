@@ -7,14 +7,14 @@ import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { Calendar, Plus, Clock, Video, MessageSquare, User } from 'lucide-react';
 
 export default function ConsultationsPage() {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, _hasHydrated } = useAuthStore();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
+    if (_hasHydrated && !isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, _hasHydrated, router]);
 
-  if (!isAuthenticated) return null;
+  if (!_hasHydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

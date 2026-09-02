@@ -25,6 +25,7 @@ interface AuthState {
   user: User | null;
   pharmacy: Pharmacy | null;
   isAuthenticated: boolean;
+  _hasHydrated: boolean;
   setAuth: (data: { accessToken: string; refreshToken: string; user: User; pharmacy: Pharmacy }) => void;
   logout: () => void;
   updateUser: (user: Partial<User>) => void;
@@ -38,6 +39,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       pharmacy: null,
       isAuthenticated: false,
+      _hasHydrated: false,
 
       setAuth: ({ accessToken, refreshToken, user, pharmacy }) =>
         set({
@@ -71,6 +73,9 @@ export const useAuthStore = create<AuthState>()(
         pharmacy: state.pharmacy,
         isAuthenticated: state.isAuthenticated,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state) state._hasHydrated = true;
+      },
     }
   )
 );

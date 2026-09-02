@@ -25,7 +25,7 @@ interface Patient {
 }
 
 export default function PatientsPage() {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, _hasHydrated } = useAuthStore();
   const router = useRouter();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,14 +53,14 @@ export default function PatientsPage() {
   };
 
   useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
+    if (_hasHydrated && !isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, _hasHydrated, router]);
 
   useEffect(() => {
     loadPatients();
   }, [page, search]);
 
-  if (!isAuthenticated) return null;
+  if (!_hasHydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

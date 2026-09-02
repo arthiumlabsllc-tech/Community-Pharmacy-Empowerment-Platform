@@ -8,14 +8,14 @@ import { User, Building2, Bell, Shield, Globe, Palette } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function SettingsPage() {
-  const { isAuthenticated, user, pharmacy } = useAuthStore();
+  const { isAuthenticated, user, pharmacy, _hasHydrated } = useAuthStore();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
+    if (_hasHydrated && !isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, _hasHydrated, router]);
 
-  if (!isAuthenticated) return null;
+  if (!_hasHydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>

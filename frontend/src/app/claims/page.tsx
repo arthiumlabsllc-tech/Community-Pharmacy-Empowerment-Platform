@@ -7,14 +7,14 @@ import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { FileText, Search, Plus, Clock, CheckCircle, XCircle, DollarSign } from 'lucide-react';
 
 export default function ClaimsPage() {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, _hasHydrated } = useAuthStore();
   const router = useRouter();
 
   useEffect(() => {
-    if (!isAuthenticated) router.replace('/login');
-  }, [isAuthenticated, router]);
+    if (_hasHydrated && !isAuthenticated) router.replace('/login');
+  }, [isAuthenticated, _hasHydrated, router]);
 
-  if (!isAuthenticated) return null;
+  if (!_hasHydrated || !isAuthenticated) return null;
 
   return (
     <DashboardLayout>
