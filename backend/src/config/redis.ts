@@ -24,11 +24,15 @@ redis.on('error', (err) => {
  * Cache a value with optional TTL (seconds).
  */
 export async function cacheSet(key: string, value: any, ttl?: number): Promise<void> {
-  const serialized = JSON.stringify(value);
-  if (ttl) {
-    await redis.setex(key, ttl, serialized);
-  } else {
-    await redis.set(key, serialized);
+  try {
+    const serialized = JSON.stringify(value);
+    if (ttl) {
+      await redis.setex(key, ttl, serialized);
+    } else {
+      await redis.set(key, serialized);
+    }
+  } catch {
+    // Silently fail — cache is optional
   }
 }
 
@@ -36,12 +40,16 @@ export async function cacheSet(key: string, value: any, ttl?: number): Promise<v
  * Retrieve a cached value.
  */
 export async function cacheGet<T = any>(key: string): Promise<T | null> {
-  const value = await redis.get(key);
-  if (!value) return null;
   try {
-    return JSON.parse(value) as T;
+    const value = await redis.get(key);
+    if (!value) return null;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return value as unknown as T;
+    }
   } catch {
-    return value as unknown as T;
+    return null;
   }
 }
 
@@ -49,16 +57,24 @@ export async function cacheGet<T = any>(key: string): Promise<T | null> {
  * Delete a cached value.
  */
 export async function cacheDel(key: string): Promise<void> {
-  await redis.del(key);
+  try {
+    await redis.del(key);
+  } catch {
+    // Silently fail
+  }
 }
 
 /**
  * Invalidate all keys matching a pattern.
  */
 export async function cacheInvalidate(pattern: string): Promise<void> {
-  const keys = await redis.keys(pattern);
-  if (keys.length > 0) {
-    await redis.del(...keys);
+  try {
+    const keys = await redis.keys(pattern);
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
+  } catch {
+    // Silently fail
   }
 }
 

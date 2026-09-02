@@ -118,9 +118,13 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 // ============ START SERVER ============
 const startServer = async () => {
   try {
-    // Connect Redis
-    await redis.connect();
-    logger.info('Redis connection established');
+    // Connect Redis (optional — server starts without it)
+    try {
+      await redis.connect();
+      logger.info('Redis connection established');
+    } catch (redisError) {
+      logger.warn('Redis connection failed — running without cache. Set REDIS_URL to enable caching.');
+    }
 
     app.listen(config.port, () => {
       logger.info(`🏥 Pharmacy Empowerment Platform API`);
@@ -137,13 +141,13 @@ const startServer = async () => {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received. Shutting down gracefully...');
-  redis.disconnect();
+  try { redis.disconnect(); } catch { /* ignore */ }
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received. Shutting down...');
-  redis.disconnect();
+  try { redis.disconnect(); } catch { /* ignore */ }
   process.exit(0);
 });
 
