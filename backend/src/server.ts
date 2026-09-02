@@ -12,7 +12,6 @@ import rateLimit from 'express-rate-limit';
 import config from './config';
 import logger from './utils/logger';
 import redis from './config/redis';
-import { query as dbQuery } from './config/database';
 
 // Route imports
 import authRoutes from './routes/auth.routes';
@@ -77,47 +76,6 @@ app.get('/health', (_req: Request, res: Response) => {
     version: '1.0.0',
     uptime: process.uptime(),
   });
-});
-
-// ============ DB DIAGNOSTICS (temporary - remove after debugging) ============
-app.get('/debug/db', async (_req: Request, res: Response) => {
-  const maskUrl = (url: string) => url.replace(/:[^:@/]+@/, ':****@');
-  try {
-    const conn = await dbQuery('SELECT NOW() as now, current_database() as db');
-    const tables = await dbQuery(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' LIMIT 30`
-    );
-    let userCount = 'n/a';
-    let demoUser = 'n/a';
-    try {
-      const uc = await dbQuery('SELECT COUNT(*)::int as count FROM users');
-      userCount = uc.rows[0].count;
-      const du = await dbQuery('SELECT email, role, is_active FROM users WHERE email = $1', ['demo@pharmacy.com']);
-      demoUser = du.rows.length > 0 ? du.rows[0] : 'NOT FOUND';
-    } catch (e: any) {
-      demoUser = `users table error: ${e.message}`;
-    }
-    res.json({
-      connected: true,
-      database: conn.rows[0].db,
-      serverTime: conn.rows[0].now,
-      tables: tables.rows.map((r: any) => r.table_name),
-      userCount,
-      demoUser,
-    });
-  } catch (error: any) {
-    res.json({
-      connected: false,
-      error: error.message,
-      code: error.code,
-      errno: error.errno,
-      databaseUrl: maskUrl(config.database.url),
-      poolConfig: {
-        ssl: !config.database.url.includes('localhost'),
-        poolSize: config.database.poolSize,
-      },
-    });
-  }
 });
 
 // ============ API ROUTES ============
