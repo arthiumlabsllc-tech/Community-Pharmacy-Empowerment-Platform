@@ -73,8 +73,10 @@ export const useAuthStore = create<AuthState>()(
         pharmacy: state.pharmacy,
         isAuthenticated: state.isAuthenticated,
       }),
-      onRehydrateStorage: () => (state) => {
-        if (state) state._hasHydrated = true;
+      onRehydrateStorage: () => () => {
+        // Use setState (not direct mutation) so React subscribers
+        // are reliably notified when hydration completes
+        useAuthStore.setState({ _hasHydrated: true });
       },
     }
   )
