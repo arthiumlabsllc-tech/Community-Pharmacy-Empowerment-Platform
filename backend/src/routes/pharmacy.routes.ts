@@ -9,6 +9,7 @@ import { authorize } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { auditLog } from '../middleware/audit.middleware';
 import { UserRole } from '../types';
+import { describeRates, resolveTaxRates, round2, type TaxRates } from '../utils/ghana-tax';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -82,6 +83,98 @@ router.put(
     } catch (error) {
       logger.error('Failed to update pharmacy profile', error);
       res.status(500).json({ success: false, message: 'Failed to update pharmacy profile' });
+    }
+  }
+);
+
+// ============ VAT SETTINGS (Act 1151) ============
+// Read/write of pharmacies.settings.tax only. Going through jsonb_set rather
+// than replacing the whole settings object keeps any other configuration the
+// pharmacy has stored from being wiped by a tax-only save.
+router.get('/tax-settings', async (req: Request, res: Response) => {
+  try {
+    const result = await db.query('SELECT settings FROM pharmacies WHERE id = $1', [
+      req.user!.pharmacyId,
+    ]);
+    const tax = result.rows[0]?.settings?.tax || {};
+    const rates = resolveTaxRates(tax.rates);
+
+    res.json({
+      success: true,
+      data: {
+        vat_registered: tax.vat_registered !== false,
+        pricing_mode: tax.pricing_mode === 'exclusive' ? 'exclusive' : 'inclusive',
+        rates,
+        rate_labels: describeRates(rates),
+        effective_standard_rate: round2(
+          (rates.vat + rates.nhil + rates.getfund) * 100
+        ),
+        registration_threshold_ghs: 750000,
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to load tax settings', error);
+    res.status(500).json({ success: false, message: 'Failed to load tax settings' });
+  }
+});
+
+router.put(
+  '/tax-settings',
+  authorize(UserRole.PHARMACY_OWNER),
+  validate([
+    body('vat_registered').optional().isBoolean().withMessage('vat_registered must be true or false'),
+    body('pricing_mode').optional().isIn(['inclusive', 'exclusive'])
+      .withMessage('pricing_mode must be inclusive or exclusive'),
+    body('rates.vat').optional().isFloat({ min: 0, max: 0.5 }).withMessage('VAT rate must be between 0 and 0.5'),
+    body('rates.nhil').optional().isFloat({ min: 0, max: 0.5 }).withMessage('NHIL rate must be between 0 and 0.5'),
+    body('rates.getfund').optional().isFloat({ min: 0, max: 0.5 })
+      .withMessage('GETFund levy must be between 0 and 0.5'),
+  ]),
+  async (req: Request, res: Response) => {
+    try {
+      const { vat_registered, pricing_mode, rates } = req.body;
+
+      const next: {
+        vat_registered: boolean;
+        pricing_mode: 'inclusive' | 'exclusive';
+        rates?: Partial<TaxRates>;
+        updated_at: string;
+      } = {
+        // Stored explicitly, including the values that match the defaults, so
+        // a later change to the statutory rate cannot silently rewrite what
+        // this pharmacy agreed to.
+        vat_registered: vat_registered === undefined ? true : vat_registered === true,
+        pricing_mode: pricing_mode === 'exclusive' ? 'exclusive' : 'inclusive',
+        updated_at: new Date().toISOString(),
+      };
+      if (rates && typeof rates === 'object') next.rates = rates as Partial<TaxRates>;
+
+      const result = await db.query(
+        `UPDATE pharmacies SET
+           settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{tax}', $2::jsonb, true),
+           updated_at = NOW()
+         WHERE id = $1
+         RETURNING settings`,
+        [req.user!.pharmacyId, JSON.stringify(next)]
+      );
+
+      await cacheDel(`pharmacy:${req.user!.pharmacyId}`);
+
+      const applied = resolveTaxRates(next.rates);
+      res.json({
+        success: true,
+        message: next.vat_registered
+          ? 'Tax settings saved'
+          : 'Tax settings saved — this pharmacy is now marked as NOT VAT registered, so no VAT, NHIL or GETFund levy will be charged',
+        data: {
+          tax: result.rows[0].settings.tax,
+          effective_rates: applied,
+          rate_labels: describeRates(applied),
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to update tax settings', error);
+      res.status(500).json({ success: false, message: 'Failed to update tax settings' });
     }
   }
 );

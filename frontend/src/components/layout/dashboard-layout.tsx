@@ -13,7 +13,7 @@ import { LanguageSelect } from './language-select';
 import {
   LayoutDashboard, Package, Users, FileText,
   Calendar, Activity, CreditCard, Settings, UserCog,
-  Menu, X, LogOut,
+  Menu, X, LogOut, ShoppingCart, Receipt, BarChart3,
 } from 'lucide-react';
 
 interface NavItem {
@@ -26,11 +26,16 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/pos', label: 'Point of Sale', icon: ShoppingCart },
+  { href: '/sales', label: 'Sales', icon: Receipt },
   { href: '/inventory', label: 'Inventory', icon: Package },
   { href: '/patients', label: 'Patients', icon: Users },
   { href: '/claims', label: 'NHIS Claims', icon: FileText },
   { href: '/consultations', label: 'Consultations', icon: Calendar },
   { href: '/screenings', label: 'Health Screenings', icon: Activity },
+  // Exposes cost price, margin and named staff performance — mirrors the
+  // authorize() guard on /pos/reports.
+  { href: '/reports', label: 'Reports', icon: BarChart3, roles: ['pharmacy_owner', 'pharmacist'] },
   { href: '/staff', label: 'Staff', icon: UserCog, roles: ['pharmacy_owner', 'pharmacist'] },
   { href: '/subscription', label: 'Subscription', icon: CreditCard },
   { href: '/settings', label: 'Settings', icon: Settings },

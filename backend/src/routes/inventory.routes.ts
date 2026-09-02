@@ -7,6 +7,7 @@ import { authenticate, authorize } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { auditLog } from '../middleware/audit.middleware';
 import { UserRole } from '../types';
+import { describeRates, resolveTaxRates, suggestVatTreatment } from '../utils/ghana-tax';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -104,6 +105,11 @@ router.post(
     body('cost_price').isFloat({ min: 0 }).withMessage('Cost price must be positive'),
     body('expiry_date').isDate().withMessage('Valid expiry date is required'),
     body('reorder_level').isInt({ min: 0 }).withMessage('Reorder level is required'),
+    body('vat_treatment').optional().isIn(['standard', 'exempt', 'zero_rated'])
+      .withMessage('VAT treatment must be standard, exempt or zero_rated'),
+    body('pack_size').optional().isInt({ min: 1 }).withMessage('Pack size must be at least 1'),
+    body('default_sell_unit').optional().isString().isLength({ max: 20 })
+      .withMessage('Selling unit must be 20 characters or fewer'),
   ]),
   async (req: Request, res: Response) => {
     try {
@@ -111,24 +117,43 @@ router.post(
         product_name, product_code, generic_name, category, manufacturer,
         batch_number, quantity, unit_price, cost_price, expiry_date,
         reorder_level, shelf_location, barcode, requires_prescription,
+        pack_size, default_sell_unit,
       } = req.body;
+
+      // When the pharmacist does not pick a treatment, suggest one from the
+      // category rather than defaulting everything to exempt: Act 1151 exempts
+      // Chapter 30 pharmaceuticals, but the toiletries, cosmetics and devices
+      // on the same shelf are standard-rated and selling them untaxed is
+      // under-declaration. The response flags the suggestion so the form can
+      // ask for confirmation instead of applying it silently.
+      const vatProvided = ['standard', 'exempt', 'zero_rated'].includes(req.body.vat_treatment);
+      const vatTreatment = vatProvided
+        ? req.body.vat_treatment
+        : suggestVatTreatment(category, product_name);
 
       const id = uuidv4();
       const result = await db.query(
         `INSERT INTO inventory (id, pharmacy_id, product_name, product_code, generic_name, category,
           manufacturer, batch_number, quantity, unit_price, cost_price, expiry_date,
-          reorder_level, shelf_location, barcode, requires_prescription)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          reorder_level, shelf_location, barcode, requires_prescription,
+          vat_treatment, pack_size, default_sell_unit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
          RETURNING *`,
         [id, req.user!.pharmacyId, product_name, product_code, generic_name || null,
          category || null, manufacturer || null, batch_number || null, quantity,
          unit_price, cost_price, expiry_date, reorder_level, shelf_location || null,
-         barcode || null, requires_prescription || false]
+         barcode || null, requires_prescription || false,
+         vatTreatment, pack_size || 1, default_sell_unit || 'pack']
       );
 
       await cacheDel(`inventory:${req.user!.pharmacyId}:*`);
 
-      res.status(201).json({ success: true, message: 'Item added to inventory', data: result.rows[0] });
+      res.status(201).json({
+        success: true,
+        message: 'Item added to inventory',
+        data: result.rows[0],
+        vat_treatment_source: vatProvided ? 'provided' : 'suggested',
+      });
     } catch (error: any) {
       if (error.code === '23505') {
         return res.status(409).json({ success: false, message: 'An item with this product code already exists' });
@@ -143,13 +168,19 @@ router.post(
 router.put(
   '/:id',
   authorize(UserRole.PHARMACY_OWNER, UserRole.PHARMACIST),
-  validate([param('id').isUUID()]),
+  validate([
+    param('id').isUUID(),
+    body('vat_treatment').optional().isIn(['standard', 'exempt', 'zero_rated'])
+      .withMessage('VAT treatment must be standard, exempt or zero_rated'),
+    body('pack_size').optional().isInt({ min: 1 }).withMessage('Pack size must be at least 1'),
+  ]),
   async (req: Request, res: Response) => {
     try {
       const {
         product_name, product_code, generic_name, category, manufacturer,
         batch_number, quantity, unit_price, cost_price, expiry_date,
         reorder_level, shelf_location, barcode, requires_prescription,
+        vat_treatment, pack_size, default_sell_unit,
       } = req.body;
 
       const result = await db.query(
@@ -167,20 +198,27 @@ router.put(
           reorder_level = COALESCE($13, reorder_level),
           shelf_location = COALESCE($14, shelf_location),
           barcode = COALESCE($15, barcode),
-          requires_prescription = COALESCE($16, requires_prescription)
+          requires_prescription = COALESCE($16, requires_prescription),
+          vat_treatment = COALESCE($17, vat_treatment),
+          pack_size = COALESCE($18, pack_size),
+          default_sell_unit = COALESCE($19, default_sell_unit)
          WHERE id = $1 AND pharmacy_id = $2
          RETURNING *`,
         [req.params.id, req.user!.pharmacyId, product_name, product_code, generic_name,
          category, manufacturer, batch_number, quantity, unit_price, cost_price,
-         expiry_date, reorder_level, shelf_location, barcode, requires_prescription]
+         expiry_date, reorder_level, shelf_location, barcode, requires_prescription,
+         vat_treatment, pack_size, default_sell_unit]
       );
 
       if (result.rows.length === 0) {
         return res.status(404).json({ success: false, message: 'Item not found' });
       }
 
+      await cacheDel(`inventory:${req.user!.pharmacyId}:*`);
+
       res.json({ success: true, message: 'Item updated', data: result.rows[0] });
     } catch (error) {
+      logger.error('Failed to update inventory item', error);
       res.status(500).json({ success: false, message: 'Failed to update item' });
     }
   }
@@ -256,20 +294,31 @@ router.post(
       }
 
       let inserted = 0;
+      let suggested = 0;
       let errors: string[] = [];
 
       await db.transaction(async (client) => {
         for (let i = 0; i < items.length; i++) {
           try {
             const item = items[i];
+            // A CSV almost never carries a VAT column, so classify from the
+            // category and report how many rows were decided automatically.
+            const hasTreatment = ['standard', 'exempt', 'zero_rated'].includes(item.vat_treatment);
+            const vatTreatment = hasTreatment
+              ? item.vat_treatment
+              : suggestVatTreatment(item.category, item.product_name);
+            if (!hasTreatment) suggested++;
+
             await client.query(
               `INSERT INTO inventory (id, pharmacy_id, product_name, product_code, generic_name, category,
-                quantity, unit_price, cost_price, expiry_date, reorder_level, requires_prescription)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                quantity, unit_price, cost_price, expiry_date, reorder_level, requires_prescription,
+                vat_treatment)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
               [uuidv4(), req.user!.pharmacyId, item.product_name, item.product_code,
                item.generic_name || null, item.category || null, item.quantity || 0,
                item.unit_price || 0, item.cost_price || 0, item.expiry_date,
-               item.reorder_level || 10, item.requires_prescription || false]
+               item.reorder_level || 10, item.requires_prescription || false,
+               vatTreatment]
             );
             inserted++;
           } catch (err: any) {
@@ -283,7 +332,12 @@ router.post(
       res.json({
         success: true,
         message: `${inserted} items imported, ${errors.length} errors`,
-        data: { inserted, errors: errors.slice(0, 20), totalErrors: errors.length },
+        data: {
+          inserted,
+          errors: errors.slice(0, 20),
+          totalErrors: errors.length,
+          vat_classified_automatically: suggested,
+        },
       });
     } catch (error) {
       logger.error('Bulk upload failed', error);
@@ -305,6 +359,53 @@ router.get('/categories/list', async (req: Request, res: Response) => {
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to load categories' });
   }
+});
+
+// ============ VAT CLASSIFICATION REFERENCE ============
+// Drives the "VAT treatment" field in the inventory form. Passing an optional
+// category and product name also returns a suggested classification, so the
+// pharmacist sees a reasoned default rather than having to know Act 1151.
+router.get('/vat-treatments', (req: Request, res: Response) => {
+  const { category, product_name } = req.query;
+  const rates = resolveTaxRates(null);
+
+  res.json({
+    success: true,
+    data: {
+      options: [
+        {
+          value: 'exempt',
+          label: 'Exempt — no VAT',
+          description:
+            'First Schedule supplies: essential drugs in Chapter 30 of the 2022 Harmonised System, plus mosquito nets. No VAT, NHIL or GETFund levy is charged, and the value is still declared on the return.',
+        },
+        {
+          value: 'standard',
+          label: `Standard — ${describeRates(rates).join(' + ')}`,
+          description:
+            'Everything else a pharmacy sells: toiletries and cosmetics, soaps and sanitisers, thermometers and blood-pressure monitors, baby food, snacks and drinks. All three charges apply to the same taxable value.',
+        },
+        {
+          value: 'zero_rated',
+          label: 'Zero-rated — taxable at 0%',
+          description:
+            'Second Schedule supplies. Taxable at 0%, so input tax remains creditable. Rarely correct for a retail pharmacy shelf — only use it if you are sure.',
+        },
+      ],
+      rates,
+      vat_registered_default: true,
+      registration_threshold_ghs: 750000,
+      // Only offered when the caller gave something to classify.
+      ...(category || product_name
+        ? {
+            suggestion: suggestVatTreatment(
+              typeof category === 'string' ? category : null,
+              typeof product_name === 'string' ? product_name : null
+            ),
+          }
+        : {}),
+    },
+  });
 });
 
 // ============ GET SINGLE ITEM ============

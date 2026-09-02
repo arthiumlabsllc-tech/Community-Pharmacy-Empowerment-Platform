@@ -22,11 +22,22 @@ import nhisRoutes from './routes/nhis.routes';
 import consultationRoutes from './routes/consultation.routes';
 import screeningRoutes from './routes/screening.routes';
 import subscriptionRoutes from './routes/subscription.routes';
+import posRoutes from './routes/pos.routes';
+import posReportRoutes from './routes/pos-report.routes';
 import adminRoutes from './routes/admin.routes';
 import uploadRoutes from './routes/upload.routes';
 
 // Initialize Express app
 const app: Application = express();
+
+/**
+ * Paystack calls this path directly, with no user token. It is therefore
+ * exempted from rate limiting (Paystack retries anything that is not a fast
+ * 200, and a throttled webhook would silently lose a confirmed payment) and it
+ * keeps its raw body, because the HMAC-SHA512 signature is computed over the
+ * exact bytes Paystack sent rather than over a re-serialised object.
+ */
+const PAYSTACK_WEBHOOK_PATH = `${config.apiPrefix}/pos/webhooks/paystack`;
 
 // ============ SECURITY MIDDLEWARE ============
 app.use(helmet({
@@ -47,6 +58,7 @@ const limiter = rateLimit({
   max: config.rateLimit.maxRequests,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req: Request) => req.path === PAYSTACK_WEBHOOK_PATH,
   message: {
     success: false,
     message: 'Too many requests. Please try again later.',
@@ -55,6 +67,9 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // ============ PARSING MIDDLEWARE ============
+// Registered ahead of express.json() so the webhook route receives the
+// untouched request bytes for signature verification.
+app.use(PAYSTACK_WEBHOOK_PATH, express.raw({ type: '*/*' }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(compression());
@@ -89,6 +104,9 @@ api.use('/nhis', nhisRoutes);
 api.use('/consultations', consultationRoutes);
 api.use('/screenings', screeningRoutes);
 api.use('/subscriptions', subscriptionRoutes);
+// Reports are mounted before /pos so the more specific prefix wins.
+api.use('/pos/reports', posReportRoutes);
+api.use('/pos', posRoutes);
 api.use('/admin', adminRoutes);
 api.use('/upload', uploadRoutes);
 

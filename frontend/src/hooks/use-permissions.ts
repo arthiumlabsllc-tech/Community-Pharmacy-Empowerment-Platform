@@ -30,5 +30,14 @@ export function usePermissions() {
     canViewStaff: isOwner || isPharmacist,
     canManageStaff: isOwner,
     canManageSubscription: isOwner,
+    // Till: anyone signed in may sell, but voiding restocks the shelf and is
+    // restricted to owner + pharmacist (see authorize() on POST /pos/sales/:id/void)
+    canUsePos: true,
+    canVoidSale: isOwner || isPharmacist,
+    // Sales reports expose cost price, margin and named staff performance
+    // (see authorize() on /pos/reports)
+    canViewSalesReports: isOwner || isPharmacist,
+    // Tax configuration is owner-only (see authorize() on PUT /pharmacies/tax-settings)
+    canManageTaxSettings: isOwner,
   };
 }

@@ -195,9 +195,15 @@ describe('Patient Screening Risk Assessment', () => {
   });
 
   it('should return low risk for normal values', () => {
-    expect(calculateRisk('blood_pressure', 0, 120, 80)).toBe('low');
+    // 120/80 is stage-1 hypertension under the ACC/AHA thresholds the triage
+    // uses (diastolic >= 80), so it is moderate rather than low.
+    expect(calculateRisk('blood_pressure', 0, 115, 75)).toBe('low');
     expect(calculateRisk('blood_sugar', 100)).toBe('low');
     expect(calculateRisk('bmi', 24)).toBe('low');
+  });
+
+  it('should flag a borderline diastolic reading as moderate', () => {
+    expect(calculateRisk('blood_pressure', 0, 120, 80)).toBe('moderate');
   });
 });
 

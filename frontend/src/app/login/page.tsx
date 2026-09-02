@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useAuthStore } from '@/store/auth-store';
 import { api } from '@/lib/api';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
@@ -100,9 +101,9 @@ export default function LoginPage() {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-500">
               Don&apos;t have an account?{' '}
-              <a href="/register" className="text-primary-600 font-semibold hover:underline">
+              <Link href="/register" className="text-primary-600 font-semibold hover:underline">
                 Register your pharmacy
-              </a>
+              </Link>
             </p>
           </div>
 

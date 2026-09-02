@@ -17,6 +17,7 @@ import {
   Boxes,
   ArrowRight,
   Stethoscope,
+  ShoppingCart,
 } from 'lucide-react';
 
 interface AnalyticsSummary {
@@ -158,8 +159,9 @@ export default function DashboardPage() {
 
   const summary = analytics?.summary;
 
-  // Inventory value is the only monetary figure the platform can compute today;
-  // sales revenue arrives with the POS module.
+  // Inventory value is the only monetary figure computed here. Till revenue
+  // lives on /reports, which reads the POS sales table and needs the
+  // 001_pos.sql migration applied before it returns anything.
   const inventoryValue = (analytics?.revenueByCategory || []).reduce(
     (sum, row) => sum + Number(row.total_value || 0),
     0
@@ -220,14 +222,20 @@ export default function DashboardPage() {
               Here&apos;s what&apos;s happening at {pharmacy?.name || 'your pharmacy'} today.
             </p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <button className="btn-secondary btn-sm" onClick={() => router.push('/patients?new=1')}>
               <Users className="w-4 h-4" />
               Add Patient
             </button>
-            <button className="btn-primary btn-sm" onClick={() => router.push('/screenings')}>
+            <button className="btn-secondary btn-sm" onClick={() => router.push('/screenings')}>
               <Stethoscope className="w-4 h-4" />
               Record Screening
+            </button>
+            {/* The till is the primary action for a counter — it is the one
+                screen a cashier opens all day. */}
+            <button className="btn-primary btn-sm" onClick={() => router.push('/pos')}>
+              <ShoppingCart className="w-4 h-4" />
+              Open the Till
             </button>
           </div>
         </div>

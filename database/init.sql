@@ -19,6 +19,17 @@ CREATE TYPE risk_level AS ENUM ('low', 'moderate', 'high', 'critical');
 CREATE TYPE notification_status AS ENUM ('pending', 'sent', 'delivered', 'failed');
 CREATE TYPE gender AS ENUM ('male', 'female', 'other');
 
+-- Point of sale
+CREATE TYPE sale_status AS ENUM ('pending', 'completed', 'voided', 'refunded', 'partially_refunded');
+CREATE TYPE sale_payment_method AS ENUM ('cash', 'momo', 'card', 'bank_transfer', 'nhis', 'credit');
+CREATE TYPE sale_payment_status AS ENUM ('pending', 'authorised', 'completed', 'failed', 'refunded');
+
+-- Ghana VAT treatment under the Value Added Tax Act, 2025 (Act 1151):
+--   standard   -> 15% VAT + 2.5% NHIL + 2.5% GETFund levy, all on the same base
+--   exempt     -> First Schedule supplies; no VAT, NHIL or GETFund levy
+--   zero_rated -> Second Schedule supplies; taxable at 0%
+CREATE TYPE vat_treatment AS ENUM ('standard', 'exempt', 'zero_rated');
+
 -- ============ PHARMACIES ============
 CREATE TABLE pharmacies (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -122,6 +133,14 @@ CREATE TABLE inventory (
   shelf_location VARCHAR(50),
   barcode VARCHAR(100),
   requires_prescription BOOLEAN DEFAULT false,
+  -- Act 1151 exempts pharmaceuticals supplied in Ghana, confined to essential
+  -- drugs in Chapter 30 of the 2022 Harmonised System. Toiletries, cosmetics
+  -- and devices sold by the same pharmacy are standard-rated and must be
+  -- classified as such.
+  vat_treatment vat_treatment NOT NULL DEFAULT 'exempt',
+  -- One inventory record can be a strip of 10 tablets sold per tablet or per strip.
+  pack_size INTEGER NOT NULL DEFAULT 1,
+  default_sell_unit VARCHAR(20) NOT NULL DEFAULT 'pack',
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -319,6 +338,146 @@ CREATE TABLE payments (
 
 CREATE INDEX idx_payments_pharmacy ON payments(pharmacy_id);
 CREATE INDEX idx_payments_status ON payments(status);
+
+-- ============ POINT OF SALE ============
+-- `payments` above is for pharmacy subscription billing. Counter sales use
+-- sales / sale_items / sale_payments so a receipt stays auditable.
+
+CREATE TABLE sales (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  pharmacy_id UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
+  receipt_number VARCHAR(50) NOT NULL,
+
+  -- A sale may be a walk-in with no patient record at all
+  patient_id UUID REFERENCES patients(id) ON DELETE SET NULL,
+  customer_name VARCHAR(200),
+  customer_phone VARCHAR(20),
+
+  served_by UUID NOT NULL REFERENCES users(id),
+  -- Pharmacist sign-off, required when the basket holds prescription items
+  approved_by UUID REFERENCES users(id),
+
+  subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
+  discount_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  discount_reason VARCHAR(255),
+  taxable_base DECIMAL(12,2) NOT NULL DEFAULT 0,
+  exempt_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  vat_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  nhil_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  getfund_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  total_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  amount_paid DECIMAL(12,2) NOT NULL DEFAULT 0,
+  change_due DECIMAL(12,2) NOT NULL DEFAULT 0,
+  currency VARCHAR(3) NOT NULL DEFAULT 'GHS',
+
+  -- 'inclusive' = stored unit prices already contain the 20% and the POS backs
+  -- the tax out. 'exclusive' = tax is added on top. Ghanaian retail shelf
+  -- prices are tax-inclusive, so that is the default.
+  pricing_mode VARCHAR(10) NOT NULL DEFAULT 'inclusive',
+  -- Snapshot of the rates actually applied, so an old receipt still reads
+  -- correctly if the law changes again.
+  tax_rates JSONB NOT NULL DEFAULT '{}',
+
+  status sale_status NOT NULL DEFAULT 'pending',
+  note TEXT,
+
+  prescription_id UUID REFERENCES prescriptions(id) ON DELETE SET NULL,
+  nhis_claim_id UUID REFERENCES nhis_claims(id) ON DELETE SET NULL,
+
+  -- Offline-first: the client generates this before it knows whether the
+  -- network is up, which makes a replayed sync a no-op instead of a duplicate.
+  client_sale_id UUID,
+
+  completed_at TIMESTAMPTZ,
+  voided_at TIMESTAMPTZ,
+  void_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT uq_sales_receipt UNIQUE (pharmacy_id, receipt_number),
+  CONSTRAINT uq_sales_client_id UNIQUE (pharmacy_id, client_sale_id),
+  CONSTRAINT chk_sales_totals CHECK (total_amount >= 0 AND amount_paid >= 0)
+);
+
+CREATE INDEX idx_sales_pharmacy ON sales(pharmacy_id);
+CREATE INDEX idx_sales_created ON sales(pharmacy_id, created_at DESC);
+CREATE INDEX idx_sales_status ON sales(pharmacy_id, status);
+CREATE INDEX idx_sales_patient ON sales(patient_id);
+CREATE INDEX idx_sales_served_by ON sales(served_by);
+CREATE INDEX idx_sales_completed ON sales(pharmacy_id, completed_at DESC) WHERE status = 'completed';
+
+CREATE TABLE sale_items (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  sale_id UUID NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+  inventory_id UUID REFERENCES inventory(id) ON DELETE SET NULL,
+
+  -- Snapshots: the product can be renamed, repriced or deleted later and the
+  -- receipt must still say exactly what was sold.
+  product_name VARCHAR(255) NOT NULL,
+  product_code VARCHAR(100),
+  generic_name VARCHAR(255),
+  batch_number VARCHAR(100),
+  expiry_date DATE,
+  requires_prescription BOOLEAN NOT NULL DEFAULT false,
+
+  quantity INTEGER NOT NULL CHECK (quantity > 0),
+  sell_unit VARCHAR(20) NOT NULL DEFAULT 'pack',
+  unit_price DECIMAL(10,2) NOT NULL,
+  discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+  line_total DECIMAL(12,2) NOT NULL,
+
+  vat_treatment vat_treatment NOT NULL DEFAULT 'exempt',
+  taxable_base DECIMAL(12,2) NOT NULL DEFAULT 0,
+  vat_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+  nhil_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+  getfund_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+
+  -- Cost at the moment of sale, so product profitability can be reported
+  -- without depending on today's cost_price.
+  unit_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_sale_items_sale ON sale_items(sale_id);
+CREATE INDEX idx_sale_items_inventory ON sale_items(inventory_id);
+CREATE INDEX idx_sale_items_product ON sale_items(product_name);
+
+-- One row per tender, so a basket can be part cash / part MoMo.
+CREATE TABLE sale_payments (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  sale_id UUID NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+  pharmacy_id UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
+
+  method sale_payment_method NOT NULL,
+  amount DECIMAL(12,2) NOT NULL CHECK (amount > 0),
+  status sale_payment_status NOT NULL DEFAULT 'completed',
+
+  momo_network VARCHAR(20),
+  momo_number VARCHAR(20),
+  reference VARCHAR(100),
+  gateway VARCHAR(30),
+  gateway_response JSONB NOT NULL DEFAULT '{}',
+
+  received_by UUID REFERENCES users(id),
+  paid_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_sale_payments_sale ON sale_payments(sale_id);
+CREATE INDEX idx_sale_payments_pharmacy ON sale_payments(pharmacy_id, created_at DESC);
+CREATE INDEX idx_sale_payments_method ON sale_payments(pharmacy_id, method);
+CREATE INDEX idx_sale_payments_reference ON sale_payments(reference);
+
+CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_sales_updated_at BEFORE UPDATE ON sales
+  FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 
 -- ============ NOTIFICATIONS ============
 CREATE TABLE notifications (

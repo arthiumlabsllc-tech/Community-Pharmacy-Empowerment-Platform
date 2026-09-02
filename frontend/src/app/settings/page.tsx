@@ -8,6 +8,7 @@ import { usePharmacyStore } from '@/store/pharmacy-store';
 import { useHydrated } from '@/hooks/use-hydrated';
 import { usePermissions } from '@/hooks/use-permissions';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
+import { TaxSettingsCard } from '@/components/settings/tax-settings-card';
 import { api } from '@/lib/api';
 import { GHANA_REGIONS } from '@/components/patients/patient-form-modal';
 import type { FontSize } from '@/lib/appearance';
@@ -357,6 +358,10 @@ export default function SettingsPage() {
             </p>
           )}
         </div>
+
+        {/* Ghana tax (Act 1151) — grouped with the pharmacy details because
+            both change how the till behaves for this one pharmacy. */}
+        <TaxSettingsCard />
 
         {/* Notifications */}
         <div className="card">

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import { Sparkles } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { api } from '@/lib/api';
 
@@ -21,6 +22,22 @@ export interface InventoryItem {
   shelf_location: string | null;
   barcode: string | null;
   requires_prescription: boolean;
+  /** Act 1151 classification. Absent on rows created before the POS migration. */
+  vat_treatment?: 'standard' | 'exempt' | 'zero_rated' | null;
+  pack_size?: number | null;
+  default_sell_unit?: string | null;
+}
+
+interface VatOption {
+  value: string;
+  label: string;
+  description: string;
+}
+
+interface VatMeta {
+  options: VatOption[];
+  registration_threshold_ghs?: number;
+  suggestion?: string;
 }
 
 interface ItemFormModalProps {
@@ -46,6 +63,11 @@ const EMPTY_FORM = {
   shelf_location: '',
   barcode: '',
   requires_prescription: false,
+  // Empty means "not chosen yet" — the server suggests a classification from
+  // the category rather than silently defaulting everything to exempt.
+  vat_treatment: '',
+  pack_size: '1',
+  default_sell_unit: 'pack',
 };
 
 /** Only the date portion of an ISO timestamp — needed for <input type="date">. */
@@ -58,12 +80,15 @@ export function ItemFormModal({ open, item, categories, onClose, onSaved }: Item
   const [form, setForm] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [touched, setTouched] = useState(false);
+  const [vatMeta, setVatMeta] = useState<VatMeta | null>(null);
+  const [suggestion, setSuggestion] = useState<string | null>(null);
 
   const isEdit = !!item;
 
   useEffect(() => {
     if (!open) return;
     setTouched(false);
+    setSuggestion(null);
     if (item) {
       setForm({
         product_name: item.product_name || '',
@@ -80,11 +105,66 @@ export function ItemFormModal({ open, item, categories, onClose, onSaved }: Item
         shelf_location: item.shelf_location || '',
         barcode: item.barcode || '',
         requires_prescription: !!item.requires_prescription,
+        vat_treatment: item.vat_treatment || '',
+        pack_size: String(item.pack_size ?? 1),
+        default_sell_unit: item.default_sell_unit || 'pack',
       });
     } else {
       setForm(EMPTY_FORM);
     }
   }, [open, item]);
+
+  // The classification options and their Act 1151 wording come from the server
+  // so the form and the tax engine cannot drift apart.
+  useEffect(() => {
+    if (!open || vatMeta) return;
+    api
+      .get<{ success: boolean; data: VatMeta }>('/inventory/vat-treatments')
+      .then((response) => setVatMeta(response.data))
+      .catch(() => {
+        // Fall back to the bare list rather than blocking the form: the server
+        // still classifies correctly when nothing is chosen.
+        setVatMeta({
+          options: [
+            { value: 'exempt', label: 'Exempt — no VAT', description: '' },
+            { value: 'standard', label: 'Standard rated', description: '' },
+            { value: 'zero_rated', label: 'Zero rated', description: '' },
+          ],
+        });
+      });
+  }, [open, vatMeta]);
+
+  // Ask for a reasoned suggestion as the pharmacist types, but only while the
+  // classification is still unchosen — an explicit choice always wins.
+  useEffect(() => {
+    if (!open || isEdit || form.vat_treatment) return;
+    const category = form.category.trim();
+    const name = form.product_name.trim();
+    if (!category && !name) {
+      setSuggestion(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams();
+        if (category) params.set('category', category);
+        if (name) params.set('product_name', name);
+        const response = await api.get<{ success: boolean; data: VatMeta }>(
+          `/inventory/vat-treatments?${params.toString()}`
+        );
+        if (!cancelled) setSuggestion(response.data?.suggestion || null);
+      } catch {
+        if (!cancelled) setSuggestion(null);
+      }
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [open, isEdit, form.vat_treatment, form.category, form.product_name]);
 
   const set = (field: keyof typeof EMPTY_FORM, value: string | boolean) =>
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -97,6 +177,7 @@ export function ItemFormModal({ open, item, categories, onClose, onSaved }: Item
     cost_price: !(Number(form.cost_price) >= 0) ? 'Cost price must be 0 or more' : '',
     expiry_date: form.expiry_date === '' ? 'Expiry date is required' : '',
     reorder_level: !/^\d+$/.test(form.reorder_level.trim()) ? 'Reorder level must be a whole number' : '',
+    pack_size: !/^[1-9]\d*$/.test(form.pack_size.trim()) ? 'Pack size must be 1 or more' : '',
   };
   const hasErrors = Object.values(errors).some(Boolean);
 
@@ -121,14 +202,23 @@ export function ItemFormModal({ open, item, categories, onClose, onSaved }: Item
         shelf_location: form.shelf_location.trim() || null,
         barcode: form.barcode.trim() || null,
         requires_prescription: form.requires_prescription,
+        pack_size: parseInt(form.pack_size, 10),
+        default_sell_unit: form.default_sell_unit.trim() || 'pack',
+        // Omitted when unchosen so the server records that it suggested the
+        // classification rather than the pharmacist confirming one.
+        ...(form.vat_treatment ? { vat_treatment: form.vat_treatment } : {}),
       };
 
       if (isEdit) {
         await api.put(`/inventory/${item!.id}`, payload);
         toast.success('Item updated');
       } else {
-        await api.post('/inventory', payload);
-        toast.success('Item added to inventory');
+        const response = await api.post<{ vat_treatment_source?: string }>('/inventory', payload);
+        toast.success(
+          response.vat_treatment_source === 'suggested'
+            ? 'Item added — VAT classification was suggested, please check it'
+            : 'Item added to inventory'
+        );
       }
       onSaved();
     } catch (error: any) {
@@ -139,6 +229,8 @@ export function ItemFormModal({ open, item, categories, onClose, onSaved }: Item
   };
 
   const errorFor = (field: keyof typeof errors) => (touched ? errors[field] : '');
+  const vatOptions = vatMeta?.options ?? [];
+  const selectedVat = vatOptions.find((option) => option.value === form.vat_treatment);
 
   return (
     <Modal
@@ -333,6 +425,89 @@ export function ItemFormModal({ open, item, categories, onClose, onSaved }: Item
               onChange={(e) => set('barcode', e.target.value)}
             />
           </div>
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label className="label">Pack size</label>
+            <input
+              type="number"
+              min="1"
+              className={`input ${errorFor('pack_size') ? 'input-error' : ''}`}
+              value={form.pack_size}
+              onChange={(e) => set('pack_size', e.target.value)}
+            />
+            {errorFor('pack_size') && <p className="text-xs text-red-600 mt-1">{errorFor('pack_size')}</p>}
+            <p className="text-xs text-gray-400 mt-1">Units in one sellable pack, e.g. 10 for a strip.</p>
+          </div>
+          <div>
+            <label className="label">Sold as</label>
+            <input
+              type="text"
+              className="input"
+              list="sell-units"
+              placeholder="pack"
+              value={form.default_sell_unit}
+              onChange={(e) => set('default_sell_unit', e.target.value)}
+            />
+            <datalist id="sell-units">
+              {['pack', 'strip', 'bottle', 'sachet', 'box', 'each', 'vial'].map((unit) => (
+                <option key={unit} value={unit} />
+              ))}
+            </datalist>
+            <p className="text-xs text-gray-400 mt-1">Shown on the receipt next to the quantity.</p>
+          </div>
+        </div>
+
+        {/* ---- VAT classification (Act 1151) ---- */}
+        <div className="rounded-xl border border-gray-200 p-3">
+          <label className="label" htmlFor="vat-treatment">
+            VAT treatment
+          </label>
+          <select
+            id="vat-treatment"
+            className="select"
+            value={form.vat_treatment}
+            onChange={(e) => set('vat_treatment', e.target.value)}
+          >
+            <option value="">Let the system suggest one</option>
+            {vatOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+
+          {selectedVat?.description && (
+            <p className="mt-2 text-xs leading-relaxed text-gray-500">{selectedVat.description}</p>
+          )}
+
+          {/* Offered, never applied silently: getting this wrong under-declares
+              VAT, so the pharmacist has to confirm it. */}
+          {!form.vat_treatment && suggestion && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 p-2.5">
+              <Sparkles className="h-4 w-4 flex-shrink-0 text-primary-600" />
+              <p className="flex-1 text-xs text-primary-900">
+                Based on this category, <strong>{suggestion.replace('_', ' ')}</strong> is likely
+                correct.
+              </p>
+              <button
+                type="button"
+                className="btn-primary btn-sm"
+                onClick={() => set('vat_treatment', suggestion)}
+              >
+                Use it
+              </button>
+            </div>
+          )}
+
+          {!form.vat_treatment && (
+            <p className="mt-2 text-xs text-gray-400">
+              Left blank, the classification is suggested from the category and you will be asked
+              to check it. Medicines in Chapter 30 of the Harmonised System are exempt; toiletries,
+              cosmetics, devices and food are standard rated.
+            </p>
+          )}
         </div>
 
         <label className="flex items-center gap-3 p-3 rounded-xl border border-gray-200 cursor-pointer">

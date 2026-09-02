@@ -55,6 +55,31 @@ function getStatus(item: InventoryItem) {
   return { label: 'In Stock', className: 'badge-success' };
 }
 
+/**
+ * Act 1151 classification as it appears on the row.
+ *
+ * "Not set" is a warning rather than a neutral label: the till falls back to
+ * exempt for anything unclassified, so an unclassified toiletry or device is
+ * being sold without the VAT, NHIL and GETFund levy it should carry.
+ */
+const VAT_TREATMENT: Record<string, { label: string; className: string; title: string }> = {
+  standard: {
+    label: 'Standard',
+    className: 'badge-neutral',
+    title: 'VAT 15% + NHIL 2.5% + GETFund levy 2.5% apply, all on the same taxable value',
+  },
+  exempt: {
+    label: 'Exempt',
+    className: 'badge-info',
+    title: 'No VAT charged — Chapter 30 medicines are exempt under the First Schedule of Act 1151',
+  },
+  zero_rated: {
+    label: 'Zero rated',
+    className: 'badge-success',
+    title: 'Taxable at 0% — input VAT on this stock is still recoverable',
+  },
+};
+
 export default function InventoryPage() {
   const { isAuthenticated } = useAuthStore();
   const hydrated = useHydrated();
@@ -328,6 +353,7 @@ export default function InventoryPage() {
                 <th>Batch / Lot</th>
                 <th>Quantity</th>
                 <th>Unit Price</th>
+                <th>Tax</th>
                 <th>Expiry Date</th>
                 <th>Status</th>
                 {(canEditInventory || canDeleteInventory) && <th>Actions</th>}
@@ -336,14 +362,14 @@ export default function InventoryPage() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-8">
+                  <td colSpan={9} className="text-center py-8">
                     <div className="spinner mx-auto" />
                     <p className="text-sm text-gray-500 mt-2">Loading inventory...</p>
                   </td>
                 </tr>
               ) : items.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-12">
+                  <td colSpan={9} className="text-center py-12">
                     <Package className="w-12 h-12 text-gray-300 mx-auto mb-3" />
                     <p className="text-gray-500">
                       {search || category ? 'No items match your filters' : 'No items in this view'}
@@ -362,6 +388,7 @@ export default function InventoryPage() {
               ) : (
                 items.map((item) => {
                   const status = getStatus(item);
+                  const vat = item.vat_treatment ? VAT_TREATMENT[item.vat_treatment] : undefined;
                   return (
                     <tr key={item.id}>
                       <td>
@@ -391,6 +418,18 @@ export default function InventoryPage() {
                         <span className="text-xs text-gray-400 ml-1">/ {item.reorder_level}</span>
                       </td>
                       <td className="text-sm">GHS {Number(item.unit_price).toFixed(2)}</td>
+                      <td>
+                        {vat ? (
+                          <span className={vat.className} title={vat.title}>{vat.label}</span>
+                        ) : (
+                          <span
+                            className="badge-warning"
+                            title="No classification recorded — the till charges this as exempt. Open the item and set its VAT treatment."
+                          >
+                            Not set
+                          </span>
+                        )}
+                      </td>
                       <td className="text-sm">
                         {new Date(item.expiry_date).toLocaleDateString([], {
                           day: 'numeric', month: 'short', year: 'numeric',
