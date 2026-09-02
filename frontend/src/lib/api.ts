@@ -98,19 +98,19 @@ class ApiClient {
   }
 
   // Convenience methods
-  get<T>(endpoint: string, options?: FetchOptions) {
+  get<T = any>(endpoint: string, options?: FetchOptions) {
     return this.fetch<T>(endpoint, { ...options, method: 'GET' });
   }
 
-  post<T>(endpoint: string, body?: any, options?: FetchOptions) {
+  post<T = any>(endpoint: string, body?: any, options?: FetchOptions) {
     return this.fetch<T>(endpoint, { ...options, method: 'POST', body: JSON.stringify(body) });
   }
 
-  put<T>(endpoint: string, body?: any, options?: FetchOptions) {
+  put<T = any>(endpoint: string, body?: any, options?: FetchOptions) {
     return this.fetch<T>(endpoint, { ...options, method: 'PUT', body: JSON.stringify(body) });
   }
 
-  delete<T>(endpoint: string, options?: FetchOptions) {
+  delete<T = any>(endpoint: string, options?: FetchOptions) {
     return this.fetch<T>(endpoint, { ...options, method: 'DELETE' });
   }
 }
