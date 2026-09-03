@@ -576,11 +576,18 @@ async function insertPayment(
     ? String(payment.status)
     : 'completed';
 
+  // The cast is load-bearing, not decoration. $5 is used twice — once as the
+  // value of an enum column and once in a text comparison — and
+  // node-postgres sends every parameter untyped, so Postgres deduces `text`
+  // from the comparison and `sale_payment_status` from the column, then
+  // rejects the statement outright with "inconsistent types deduced for
+  // parameter $5". Naming the type in the comparison makes both uses agree.
   const result = await client.query(
     `INSERT INTO sale_payments
        (sale_id, pharmacy_id, method, amount, status, momo_network, momo_number,
         reference, gateway, gateway_response, received_by, paid_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $5 = 'completed' THEN NOW() ELSE NULL END)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+             CASE WHEN $5::sale_payment_status = 'completed' THEN NOW() ELSE NULL END)
      RETURNING *`,
     [
       saleId, pharmacyId, method, amount, status,
@@ -1238,8 +1245,16 @@ router.post(
               recorded_offline, client_recorded_at, client_quoted_total, completed_at)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
                    $24,$25,$26,
-                   CASE WHEN $19 = 'completed' THEN COALESCE($25, NOW()) ELSE NULL END)
+                   CASE WHEN $19::sale_status = 'completed'
+                        THEN COALESCE($25::timestamptz, NOW()) ELSE NULL END)
            RETURNING id`,
+          // $19 feeds both the enum `status` column and the comparison that
+          // decides `completed_at`. Untyped parameters cannot satisfy both, so
+          // without the casts Postgres fails the statement at parse time with
+          // "inconsistent types deduced for parameter $19" and no sale can ever
+          // be recorded — the error surfaces as a bare 500 well before any
+          // payment gateway is called, which is what makes it look like a
+          // gateway problem when it is not one.
           [
             pharmacyId, receiptNumber, patientId, customerName, customerPhone,
             userId, approverId,
