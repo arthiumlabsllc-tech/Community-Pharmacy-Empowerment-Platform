@@ -119,6 +119,42 @@ npm run pages:build
 npx wrangler pages deploy .vercel/output/static --project-name=pharmacy-platform
 ```
 
+### Every non-static route must declare the edge runtime
+
+`@cloudflare/next-on-pages` fails the **whole** deploy if any route is rendered
+on demand without an edge runtime declaration:
+
+```
+⚡️ ERROR: Failed to produce a Cloudflare Pages build from the project.
+⚡️ 	The following routes were not configured to run with the Edge Runtime:
+⚡️ 	  - /patients/[id]
+```
+
+Nineteen of the twenty routes are prerendered static (`○` in the build output)
+because they are client-rendered pages behind no dynamic segment. Only
+`/patients/[id]` is server-rendered (`ƒ`), so it is the only one carrying
+`export const runtime = 'edge';`
+(`frontend/src/app/patients/[id]/page.tsx`).
+
+**Add the same export to any new non-static route** — an `[id]` segment, a
+`route.ts` API handler, or anything reaching for `cookies()`, `headers()` or
+`dynamic = 'force-dynamic'`. Such a route builds fine under `next build` and
+still breaks the Cloudflare deploy, and the reason only ever appears in the
+Cloudflare log, not locally.
+
+Do not substitute `dynamic = 'force-static'`. It prerenders one shell with
+empty params and serves it for every value of `[id]`, and these pages read the
+id from `useParams()` — so every patient would share one page.
+
+**This cannot be reproduced on Windows.** `next-on-pages` shells out through
+`npm`, and the `vercel build` it runs needs to create symlinks, which fails
+with `EPERM` without Developer Mode or elevation. The local check is
+`npx next build`: when a page's edge config is picked up, Next prints
+`⚠ Using edge runtime on a page currently disables static generation for that
+page`, and the page then appears under `functions` in
+`.next/server/middleware-manifest.json` with `server/edge-runtime-webpack.js`
+in its file list. The authoritative check remains the Cloudflare build.
+
 ---
 
 ## Step 6: Update CORS on Backend

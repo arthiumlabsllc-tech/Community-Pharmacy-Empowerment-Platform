@@ -5,15 +5,15 @@ against the code rather than trusted — every claim here names the file or the
 table it came from.
 
 Last verified: backend `tsc` clean, 405 tests passing (11 suites); frontend
-`tsc` clean, 433 tests passing (15 suites), `next build` producing 20 routes.
+`tsc` clean, 433 tests passing (15 suites), `next build` producing 20 routes
+with `/patients/[id]` compiled for the edge runtime.
 
 ---
 
 ## Blocked right now: three unapplied migrations
 
-This is the only thing standing between the committed code and working
-features in production. All three need pasting into the **Supabase SQL editor**
-in order:
+All three below need pasting into the **Supabase SQL editor** in order, and
+until they are, the newer features stay dark in production:
 
 | Migration | What it unlocks |
 |---|---|
@@ -30,6 +30,14 @@ can still read. Nothing 500s and nothing pretends to have data it does not.
 
 `003` is safe to re-run: its backfill skips any product that already has a
 batch, so it will not duplicate stock.
+
+A second blocker sat in the deploy rather than the data, and was more complete
+than this one: Cloudflare Pages had been failing the build outright because
+`/patients/[id]` did not declare the edge runtime, so **nothing committed after
+`0f73eb2` had reached production at all** — not the POS, not offline selling,
+not batch tracking. The export is in place and the reason is written up in
+`docs/DEPLOYMENT.md`; what is not yet confirmed is a green Cloudflare build,
+because `next-on-pages` cannot run on Windows.
 
 ---
 
