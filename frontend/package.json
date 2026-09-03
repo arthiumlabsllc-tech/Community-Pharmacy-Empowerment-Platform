@@ -8,9 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest --coverage",
-    "pages:build": "npx @cloudflare/next-on-pages",
-    "pages:dev": "npx wrangler pages dev .vercel/output/static --compatibility-flag=nodejs_compat",
-    "pages:deploy": "npx wrangler pages deploy .vercel/output/static"
+    "deploy": "vercel --prod"
   },
   "dependencies": {
     "next": "^15.0.0",
@@ -24,8 +22,6 @@
     "clsx": "^2.1.0"
   },
   "devDependencies": {
-    "@cloudflare/next-on-pages": "^1.8.5",
-    "wrangler": "^3.22.0",
     "@types/node": "^20.10.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

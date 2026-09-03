@@ -1,18 +1,5 @@
 'use client';
 
-/**
- * Cloudflare Pages builds this through @cloudflare/next-on-pages, which can only
- * serve a non-static route on the Workers edge runtime and fails the whole
- * deploy otherwise. Every other page here is prerendered static because it is
- * client-rendered behind no dynamic segment; this one has `[id]` and no
- * generateStaticParams, so Next renders it on demand.
- *
- * Deliberately not `dynamic = 'force-static'`: that prerenders one shell with
- * empty params and serves it for every patient, and useParams() below is the
- * only thing supplying the id this page fetches with.
- */
-export const runtime = 'edge';
-
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';

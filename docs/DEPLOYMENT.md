@@ -1,10 +1,10 @@
-# Deployment Guide — Cloudflare Pages + Render + Supabase
+# Deployment Guide — Vercel + Render + Supabase
 
 ## $0 Production Testing Stack
 
 | Component       | Service              | Free Tier                          |
 |-----------------|----------------------|------------------------------------|
-| Frontend        | **Cloudflare Pages** | Unlimited bandwidth, 500 builds/mo |
+| Frontend        | **Vercel**           | 100GB bandwidth, 6,000 build min/mo |
 | Backend         | **Render.com**       | Free web service                   |
 | PostgreSQL      | **Supabase**         | 500MB database, 1GB storage        |
 | Redis (cache)   | **Upstash**          | 10,000 commands/day                |
@@ -67,7 +67,7 @@
    | `REDIS_URL` | *(paste from Upstash Step 2)* |
    | `JWT_SECRET` | *(generate: https://generate-secret.vercel.app/64)* |
    | `JWT_REFRESH_SECRET` | *(generate: https://generate-secret.vercel.app/64)* |
-   | `CORS_ORIGIN` | `https://your-project.pages.dev` *(set after Cloudflare deploy)* |
+   | `CORS_ORIGIN` | `https://your-project.vercel.app` *(set after the Vercel deploy — Step 6)* |
 
 7. Click **Create Web Service**
 8. Wait for the build to complete, then visit `https://pharmacy-platform-api.onrender.com/health`
@@ -91,38 +91,75 @@ Or open **Supabase SQL Editor** and run the INSERT statements from `backend/src/
 
 ---
 
-## Step 5: Cloudflare Pages (Frontend) — 5 minutes
+## Step 5: Vercel (Frontend) — 5 minutes
 
-### Option A: Dashboard Deploy (Easiest)
+Vercel is the first-party host for Next.js. There is no adapter between the
+framework and the platform, so the build Vercel runs is the build you run
+locally (`npm run build`) and a failure is reproducible on your own machine.
 
-1. Go to https://dash.cloudflare.com → **Workers & Pages**
-2. Click **Create → Pages → Connect to Git**
-3. Select your GitHub repository
+### Option A: Git Integration (in use — auto-deploys on push)
+
+1. Go to https://vercel.com → **Sign up / Log in with GitHub**
+2. Click **Add New… → Project**
+3. **Import** the GitHub repository
 4. Configure the build:
-   - **Project name**: `pharmacy-platform`
-   - **Production branch**: `main`
-   - **Build system**: Select **Next.js** (or configure manually):
-     - **Build command**: `npx @cloudflare/next-on-pages`
-     - **Build output directory**: `.vercel/output/static`
-   - **Root directory**: `frontend`
-5. Add **Environment Variables** (Settings → Environment Variables):
-   - `NEXT_PUBLIC_API_URL` = `https://pharmacy-platform-api.onrender.com/api`
-   - `NEXT_PUBLIC_APP_NAME` = `Pharmacy Empowerment Platform`
-6. Click **Save and Deploy**
+   - **Project name**: `pharmacy-platform` *(becomes the `.vercel.app` subdomain)*
+   - **Framework Preset**: `Next.js` *(auto-detected)*
+   - **Root Directory**: `frontend` — **required**, see the monorepo note below
+   - **Build / Output / Install Command**: leave all three at their defaults
+5. Add **Environment Variables** *before* the first build:
+
+   | Key | Value | Environments |
+   |-----|-------|--------------|
+   | `NEXT_PUBLIC_API_URL` | `https://<your-api>.onrender.com/api` | Production, Preview |
+
+   `NEXT_PUBLIC_*` values are inlined into the client bundle **at build time**.
+   A variable added after a build does not reach it — redeploy afterwards. If it
+   is missing, `frontend/src/lib/api.ts` falls back to
+   `http://localhost:5000/api` and every request the deployed site makes fails
+   while the site itself still loads, which reads as a broken backend.
+
+   This is the only environment variable the frontend reads.
+
+6. Click **Deploy**
 
 ### Option B: CLI Deploy
 
 ```bash
+npm install -g vercel
 cd frontend
-npm install
-npm run pages:build
-npx wrangler pages deploy .vercel/output/static --project-name=pharmacy-platform
+vercel login
+vercel env add NEXT_PUBLIC_API_URL production   # paste the Render API URL
+vercel --prod
 ```
 
-### Every non-static route must declare the edge runtime
+Run the CLI from `frontend/`, not the repo root: Vercel treats the directory it
+is invoked from as the Root Directory, and still finds the workspace lockfile at
+the repo root on its own. Prefer Option A — a CLI deploy is a one-off and does
+not redeploy on push.
 
-`@cloudflare/next-on-pages` fails the **whole** deploy if any route is rendered
-on demand without an edge runtime declaration:
+### Monorepo note
+
+This repository uses npm workspaces (`backend`, `frontend`) with a **single
+`package-lock.json` at the root** and none inside `frontend/`. That is a
+supported Vercel layout, and two mistakes break it:
+
+- Setting Root Directory to the repo root makes Vercel build both workspaces,
+  including the Express backend, which Vercel cannot serve as a long-running
+  process.
+- Adding a second lockfile inside `frontend/` desynchronises it from the root
+  one. Install from the repo root and let the workspaces hoist.
+
+The backend stays on Render. Vercel hosts the frontend only.
+
+### Why this project moved off Cloudflare Pages
+
+Kept as history, because the failure mode is invisible from the code and will
+look like nonsense if the hosting is ever moved back.
+
+Cloudflare Pages serves Next.js through `@cloudflare/next-on-pages`, which
+converts the build to Workers and **fails the entire deploy** if any route is
+rendered on demand without an edge runtime declaration:
 
 ```
 ⚡️ ERROR: Failed to produce a Cloudflare Pages build from the project.
@@ -130,41 +167,57 @@ on demand without an edge runtime declaration:
 ⚡️ 	  - /patients/[id]
 ```
 
-Nineteen of the twenty routes are prerendered static (`○` in the build output)
-because they are client-rendered pages behind no dynamic segment. Only
-`/patients/[id]` is server-rendered (`ƒ`), so it is the only one carrying
-`export const runtime = 'edge';`
-(`frontend/src/app/patients/[id]/page.tsx`).
+Nineteen of the twenty routes are prerendered static (`○`) because they are
+client-rendered pages behind no dynamic segment. `/patients/[id]` is the one
+server-rendered route (`ƒ`), and adding it silently held production at the
+previous commit while seven later commits sat undeployed on GitHub. Three
+properties made that expensive rather than merely annoying:
 
-**Add the same export to any new non-static route** — an `[id]` segment, a
-`route.ts` API handler, or anything reaching for `cookies()`, `headers()` or
-`dynamic = 'force-dynamic'`. Such a route builds fine under `next build` and
-still breaks the Cloudflare deploy, and the reason only ever appears in the
-Cloudflare log, not locally.
+- **It only ever reported in the Cloudflare build log.** `next build` passed,
+  so nothing on a development machine distinguished a deployable commit from a
+  broken one.
+- **`next-on-pages` cannot run on Windows.** It shells out through `npm`, and
+  the `vercel build` it invokes dies on `EPERM: operation not permitted,
+  symlink` without Developer Mode or elevation.
+- **`nodejs_compat` is never checked at build time.** The adapter only copies a
+  fallback page to `cdn-cgi/errors/no-nodejs_compat.html`, so a missing
+  compatibility flag produces a green build and a broken runtime.
 
-Do not substitute `dynamic = 'force-static'`. It prerenders one shell with
-empty params and serves it for every value of `[id]`, and these pages read the
-id from `useParams()` — so every patient would share one page.
+The adapter is also deprecated upstream — Cloudflare's own install output says
+`Please use the OpenNext adapter instead`.
 
-**This cannot be reproduced on Windows.** `next-on-pages` shells out through
-`npm`, and the `vercel build` it runs needs to create symlinks, which fails
-with `EPERM` without Developer Mode or elevation. The local check is
-`npx next build`: when a page's edge config is picked up, Next prints
-`⚠ Using edge runtime on a page currently disables static generation for that
-page`, and the page then appears under `functions` in
-`.next/server/middleware-manifest.json` with `server/edge-runtime-webpack.js`
-in its file list. The authoritative check remains the Cloudflare build.
+None of this applies on Vercel. `/patients/[id]` is an ordinary Node serverless
+function, and a new dynamic segment, `route.ts` handler, or `cookies()` /
+`headers()` call needs no declaration of any kind.
+
+**If the hosting is ever moved back to Cloudflare**, every non-static route
+needs `export const runtime = 'edge'`, and `dynamic = 'force-static'` is *not*
+a substitute — it prerenders one shell with empty params and serves it for every
+value of `[id]`, and these pages read the id from `useParams()`, so every
+patient would silently share one page.
 
 ---
 
 ## Step 6: Update CORS on Backend
 
-After your Cloudflare Pages deploy completes, go back to Render:
+After the Vercel deploy completes, go back to Render. The backend only accepts
+the origin it is told to, so a new frontend URL means a new `CORS_ORIGIN` —
+without it the browser blocks the login request and the site looks broken even
+though both halves are running.
 
 1. Go to your Render service → **Environment**
-2. Update `CORS_ORIGIN` to your Cloudflare Pages URL:
-   `https://pharmacy-platform.pages.dev`
+2. Update `CORS_ORIGIN` to your Vercel URL:
+   `https://pharmacy-platform.vercel.app`
 3. Click **Save Changes** — Render will auto-redeploy
+4. Confirm it took by sending the new origin and checking it is echoed back:
+
+   ```bash
+   curl -i -H "Origin: https://pharmacy-platform.vercel.app" \
+     https://<your-api>.onrender.com/api/auth/login
+   ```
+
+   The response should carry a matching `access-control-allow-origin` and
+   `access-control-allow-credentials: true`.
 
 ---
 
@@ -174,10 +227,15 @@ After all steps:
 
 | Service | URL |
 |---------|-----|
-| **Frontend** | `https://pharmacy-platform.pages.dev` |
-| **Backend API** | `https://pharmacy-platform-api.onrender.com/api` |
-| **API Health** | `https://pharmacy-platform-api.onrender.com/health` |
+| **Frontend** | `https://<project>.vercel.app` *(Vercel → your project → Domains)* |
+| **Backend API** | `https://community-pharmacy-empowerment-platform.onrender.com/api` |
+| **API Health** | `https://community-pharmacy-empowerment-platform.onrender.com/health` |
 | **Database** | Managed by Supabase (dashboard access only) |
+
+The old Cloudflare Pages URL, `https://community-pharmacy-empowerment-platform.pages.dev`,
+still resolves and still serves a stale build. Delete the Pages project once
+Vercel is confirmed working, or the two will drift apart and it will not be
+obvious which one anyone is looking at.
 
 ---
 
@@ -188,7 +246,7 @@ After all steps:
 | **Render** | Spins down after 15min idle | First request takes ~30s | Use a cron ping service (e.g., cron-job.org) |
 | **Supabase** | 500MB database, pauses after 7 days idle | Enough for MVP testing | Log in weekly to keep active |
 | **Upstash** | 10K commands/day | ~100 active users | Sufficient for testing |
-| **Cloudflare** | 500 builds/month | More than enough | — |
+| **Vercel** | Hobby tier is **non-commercial use only**; 100GB bandwidth, 6,000 build min/mo | Fine for testing, but a paid Pro seat is required before charging customers | Budget Vercel **Pro** ($20/mo) at first revenue. Cloudflare Pages permitted commercial use on its free tier — revisit if this becomes the deciding cost |
 
 ### Keep Render Awake (Optional)
 
@@ -205,6 +263,7 @@ When you outgrow the free tier:
 
 | Milestone | Upgrade To | Est. Cost |
 |-----------|-----------|-----------|
+| First paying pharmacy (Vercel Hobby forbids commercial use) | Vercel **Pro** | $20/mo |
 | 50+ pharmacies, need always-on | Render **Starter** ($7/mo) | $7/mo |
 | 500+ pharmacies, more DB space | Supabase **Pro** ($25/mo) | $25/mo |
 | 1000+ pharmacies, full scale | AWS EC2 + RDS + ElastiCache | $150+/mo |

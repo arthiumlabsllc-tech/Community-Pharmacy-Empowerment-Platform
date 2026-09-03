@@ -6,38 +6,95 @@ table it came from.
 
 Last verified: backend `tsc` clean, 405 tests passing (11 suites); frontend
 `tsc` clean, 433 tests passing (15 suites), `next build` producing 20 routes
-with `/patients/[id]` compiled for the edge runtime.
+with `/patients/[id]` server-rendered on demand. Production probed live on
+2026-09-03.
 
 ---
 
-## Blocked right now: three unapplied migrations
+## In flight: the frontend is moving from Cloudflare Pages to Vercel
 
-All three below need pasting into the **Supabase SQL editor** in order, and
-until they are, the newer features stay dark in production:
+Cloudflare Pages could not deploy this app reliably. `0f73eb2` added
+`/patients/[id]`, the first dynamically rendered route, and every build from
+that commit onward failed the `next-on-pages` edge-runtime gate — so
+`https://community-pharmacy-empowerment-platform.pages.dev` froze on
+**`197da45`**, the commit immediately before it, while seven later commits sat
+undeployed on GitHub. Established against the live site rather than assumed:
 
-| Migration | What it unlocks |
+| Evidence | What it pinned down |
 |---|---|
-| `database/migrations/001_pos.sql` | `sales`, `sale_items`, `sale_payments`, `inventory.vat_treatment` — every `/api/pos/*` route |
-| `database/migrations/002_offline_sync.sql` | `idempotency_keys` — replay protection for writes queued during an outage |
-| `database/migrations/003_inventory_batches.sql` | `inventory_batches`, `sale_item_batches`, the derived-stock triggers — batch/lot tracking, FEFO rotation, recall traceability, stock alerts |
+| `/staff` and `/patients/<uuid>` → 404 | both added in `0f73eb2` |
+| `/register`, `/pos`, `/sales`, `/reports` → 404 | added in `1089fbb` |
+| `/sync` → 404 | added in `4798aa3` |
+| `/recall` → 404 | added in `7eaec59` |
+| 8 sidebar items live against 14 in `dashboard-layout.tsx` | the 6 missing are exactly the 6 that 404 |
+| dashboard renders `GHS 2,450`, `1,247`, `CLM-2024-0156` | literals that appear nowhere in current source |
+| deployed `sw.js` is 3,227 bytes | the repo's is 215 lines and references `/pos` |
 
-**Deploying before migrating is safe but the features stay dark.** The code was
-built to degrade honestly rather than fail confusingly: batch and recall
-endpoints return `501` with a message naming the migration, the UI catches that
-status and shows a panel explaining what is missing and what still works, and
-the notification bell falls back to deriving alerts from the stock figures it
-can still read. Nothing 500s and nothing pretends to have data it does not.
+`ba2daf5` satisfied the gate, but the deeper problem is that the gate only ever
+reported in the Cloudflare log, and the adapter cannot run on Windows at all
+(`vercel build` dies on `EPERM: symlink`), so no commit could be checked before
+pushing it. Vercel removes the adapter entirely — it runs plain `next build`,
+the same command that runs locally, so a failure is reproducible here. See "Why
+this project moved off Cloudflare Pages" in `docs/DEPLOYMENT.md`.
 
-`003` is safe to re-run: its backfill skips any product that already has a
-batch, so it will not duplicate stock.
+**Vercel Git integration is connected** and has built `ba2daf5`: Vercel CLI
+59.3.0, Next.js 15.5.25 detected, `npm run build` executed inside the
+`frontend` workspace. The Cloudflare coupling is now removed:
 
-A second blocker sat in the deploy rather than the data, and was more complete
-than this one: Cloudflare Pages had been failing the build outright because
-`/patients/[id]` did not declare the edge runtime, so **nothing committed after
-`0f73eb2` had reached production at all** — not the POS, not offline selling,
-not batch tracking. The export is in place and the reason is written up in
-`docs/DEPLOYMENT.md`; what is not yet confirmed is a green Cloudflare build,
-because `next-on-pages` cannot run on Windows.
+| Removed | Was |
+|---|---|
+| `export const runtime = 'edge'` | `frontend/src/app/patients/[id]/page.tsx` |
+| `@cloudflare/next-on-pages`, `wrangler` | `frontend/package.json` and the root lockfile — 59 packages pruned |
+| `pages:build`, `pages:dev`, `pages:deploy` | replaced by `deploy: vercel --prod` |
+| `output: undefined` | `frontend/next.config.js` |
+| `frontend/public/_redirects` | a Cloudflare/Netlify SPA-fallback convention Vercel does not interpret |
+
+Verified after the removal: frontend `tsc` clean, `next build` producing the
+same 20 routes with the edge-runtime warning gone, 433 tests still passing.
+
+### Outstanding
+
+1. **Commit and push the removal**, so the next Vercel build carries it.
+2. **`NEXT_PUBLIC_API_URL` must be set on the Vercel project.** It is inlined
+   into the client bundle at build time; without it `frontend/src/lib/api.ts`
+   falls back to `http://localhost:5000/api` and every request fails while the
+   pages still load — which reads as a broken backend. It is the only
+   environment variable the frontend reads.
+3. **`CORS_ORIGIN` on Render must be updated** to the new `.vercel.app` URL, or
+   the browser blocks the login request.
+4. **Record the Vercel URL** here and in `docs/DEPLOYMENT.md`.
+5. **Delete the Cloudflare Pages project** once Vercel is confirmed working, so
+   the stale `pages.dev` build stops being reachable and mistaken for
+   production.
+
+Cost caveat worth stating plainly: Vercel's Hobby tier is **non-commercial use
+only** and this is a B2B SaaS, whereas Cloudflare Pages permitted commercial
+use for free. Budget Vercel Pro ($20/mo) at first revenue.
+
+---
+
+## Database: the migrations are applied
+
+This was the previous blocker and it is cleared. Verified against the live API,
+not taken on trust:
+
+| Migration | Evidence |
+|---|---|
+| `001_pos.sql` | `GET /api/pos/sales` returns 200, and its query joins `sale_payments` — a table `database/init.sql` does not create |
+| `003_inventory_batches.sql` | `GET /api/inventory/recall` returns 200 with a payload; that handler returns 501 with `RECALL_NEEDS_003` whenever `hasBatchTables()` is false |
+| `002_offline_sync.sql` | **Not independently confirmed.** `idempotency_keys` is only reached after validation passes, and proving it would mean writing to production. Inferred from the other two, applied in the same pass |
+
+Also verified live: `/health` 200 in 0.85s; `demo@pharmacy.com` returns a real
+`pharmacy_owner` JWT; CORS answers the Pages origin with credentials; and all
+thirteen deployed JS chunks carry the Render API URL with no `localhost`
+anywhere in them. **The backend is not the problem.**
+
+The code still degrades honestly if a migration is ever missing — batch and
+recall endpoints return `501` naming the migration, the UI catches that status
+and explains what is missing and what still works, and the notification bell
+falls back to deriving alerts from the stock figures it can still read. `003` is
+safe to re-run: its backfill skips any product that already has a batch, so it
+will not duplicate stock.
 
 ---
 

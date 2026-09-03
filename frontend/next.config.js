@@ -4,8 +4,6 @@ const nextConfig = {
   images: {
     domains: ['localhost'],
   },
-  // Cloudflare Pages handles output automatically
-  output: undefined,
 };
 
 module.exports = nextConfig;

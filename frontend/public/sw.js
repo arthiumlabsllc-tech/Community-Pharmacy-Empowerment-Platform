@@ -2,7 +2,7 @@
  * The service worker.
  *
  * Served from /public/sw.js and registered by app-bootstrap.tsx in production
- * only, so it works on Cloudflare Pages with no build plugin in the way.
+ * only, so it works on Vercel with no build plugin in the way.
  *
  * It does two jobs, and it is worth being clear about what neither of them is:
  *

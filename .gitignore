@@ -7,9 +7,9 @@ out/
 # TypeScript incremental build info
 *.tsbuildinfo
 
-# Cloudflare Pages (next-on-pages) output
+# Vercel (frontend hosting)
 .vercel/
-.wrangler/
+.vercel-tmp/
 
 # Environment files
 .env
