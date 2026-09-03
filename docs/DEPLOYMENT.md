@@ -142,13 +142,44 @@ not redeploy on push.
 
 This repository uses npm workspaces (`backend`, `frontend`) with a **single
 `package-lock.json` at the root** and none inside `frontend/`. That is a
-supported Vercel layout, and two mistakes break it:
+supported Vercel layout, and three mistakes break it:
 
 - Setting Root Directory to the repo root makes Vercel build both workspaces,
   including the Express backend, which Vercel cannot serve as a long-running
   process.
 - Adding a second lockfile inside `frontend/` desynchronises it from the root
   one. Install from the repo root and let the workspaces hoist.
+- **Relying on a sibling workspace's dependency through hoisting.** Vercel
+  installs only the Root Directory's workspace, not the whole monorepo, so
+  anything `frontend/` uses must be declared in `frontend/package.json` even
+  when it is already present in the repo root's `node_modules`.
+
+That third one cost a deployment, and it is worth understanding because the
+error names the wrong culprit. `frontend/src/test/setup.ts` uses the `jest`
+global, and `frontend/tsconfig.json` includes `**/*.ts`, so `next build`
+type-checks the test files as part of the production build. `@types/jest` was
+declared only in `backend/package.json`. Locally npm hoists it to the root
+`node_modules/@types` and TypeScript finds it, so every local build passed. On
+Vercel it was absent and the build died with:
+
+```
+./src/test/setup.ts:22:17
+Type error: Cannot use namespace 'jest' as a value.
+```
+
+`@testing-library/jest-dom/types/jest.d.ts` opens `declare global { namespace
+jest { … } }` to add its matchers, and its first line is
+`/// <reference types="jest" />` — yet the package declares **no**
+`peerDependencies`, so npm never installs `@types/jest` on its behalf and
+`.npmrc`'s `legacy-peer-deps` is irrelevant. With `@types/jest` missing, only
+the namespace survives: `jest` exists as a type but not as a value.
+
+Fix: declare `"@types/jest"` in `frontend/package.json`, matching the backend's
+range so both dedupe to one copy. **A green local build cannot verify this** —
+hoisting leaves the two states byte-identical on disk. The checks are
+`npm ls @types/jest --workspace=frontend`, which must name `frontend` rather
+than print `(empty)`, and the `packages["frontend"]` entry in
+`package-lock.json`, which must list it.
 
 The backend stays on Render. Vercel hosts the frontend only.
 

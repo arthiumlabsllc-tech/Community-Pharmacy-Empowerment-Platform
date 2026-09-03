@@ -37,9 +37,28 @@ pushing it. Vercel removes the adapter entirely — it runs plain `next build`,
 the same command that runs locally, so a failure is reproducible here. See "Why
 this project moved off Cloudflare Pages" in `docs/DEPLOYMENT.md`.
 
-**Vercel Git integration is connected** and has built `ba2daf5`: Vercel CLI
-59.3.0, Next.js 15.5.25 detected, `npm run build` executed inside the
-`frontend` workspace. The Cloudflare coupling is now removed:
+**Vercel Git integration is connected** and has built twice — `ba2daf5` and
+`5010d9a` — and **both builds failed**. Unlike Cloudflare, Vercel reports
+through GitHub commit statuses (context `Vercel`), so build state is readable
+from the API instead of only from the dashboard.
+
+The failure was not the migration. It was a latent dependency bug that the
+Cloudflare builder had been masking:
+
+```
+./src/test/setup.ts:22:17
+Type error: Cannot use namespace 'jest' as a value.
+```
+
+`@types/jest` was declared only in `backend/package.json`. Vercel installs just
+the Root Directory's workspace, so the frontend never received it — while
+locally npm hoists it to the root `node_modules/@types`, TypeScript finds it,
+and every local `next build` passed. `@testing-library/jest-dom` requires it via
+`/// <reference types="jest" />` but declares no `peerDependencies`, so nothing
+installs it automatically. Fixed by declaring it in `frontend/package.json`;
+full write-up in `docs/DEPLOYMENT.md` → "Monorepo note".
+
+The Cloudflare coupling is now removed:
 
 | Removed | Was |
 |---|---|
@@ -54,7 +73,10 @@ same 20 routes with the edge-runtime warning gone, 433 tests still passing.
 
 ### Outstanding
 
-1. **Commit and push the removal**, so the next Vercel build carries it.
+1. **Confirm the Vercel build goes green** on the commit carrying the
+   `@types/jest` fix, then record the `.vercel.app` URL here and in
+   `docs/DEPLOYMENT.md`. Until a build succeeds there is no Vercel deployment at
+   all, and the only live frontend remains the stale Cloudflare one.
 2. **`NEXT_PUBLIC_API_URL` must be set on the Vercel project.** It is inlined
    into the client bundle at build time; without it `frontend/src/lib/api.ts`
    falls back to `http://localhost:5000/api` and every request fails while the
@@ -62,10 +84,16 @@ same 20 routes with the edge-runtime warning gone, 433 tests still passing.
    environment variable the frontend reads.
 3. **`CORS_ORIGIN` on Render must be updated** to the new `.vercel.app` URL, or
    the browser blocks the login request.
-4. **Record the Vercel URL** here and in `docs/DEPLOYMENT.md`.
-5. **Delete the Cloudflare Pages project** once Vercel is confirmed working, so
+4. **Delete the Cloudflare Pages project** once Vercel is confirmed working, so
    the stale `pages.dev` build stops being reachable and mistaken for
    production.
+5. **CI has been red on every commit inspected** — `197da45`, `0f73eb2`,
+   `7eaec59`, `ba2daf5` and `5010d9a` all show `Test & Lint` failing, with
+   `Build` and `Deploy` skipped downstream. Two suspects: `npm run lint
+   --workspace=frontend` runs `next lint`, which is deprecated in Next 15.5 and
+   has **no ESLint config anywhere in the repo** to run against; and CI pins
+   `NODE_VERSION: '18'`. Independent of the deploy, but a permanently red
+   pipeline warns nobody about anything.
 
 Cost caveat worth stating plainly: Vercel's Hobby tier is **non-commercial use
 only** and this is a B2B SaaS, whereas Cloudflare Pages permitted commercial
