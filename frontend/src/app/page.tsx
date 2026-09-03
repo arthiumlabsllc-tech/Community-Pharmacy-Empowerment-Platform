@@ -7,6 +7,7 @@ import { useHydrated } from '@/hooks/use-hydrated';
 import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { StatCard } from '@/components/ui/stat-card';
 import { api } from '@/lib/api';
+import { EXPIRING_WINDOW_DAYS } from '@/lib/notification-feed';
 import {
   Package,
   Users,
@@ -137,7 +138,12 @@ export default function DashboardPage() {
           api.get('/nhis/claims?limit=1'),
           api.get('/pharmacies/activity?limit=8'),
           api.get('/inventory/low-stock'),
-          api.get('/inventory/expiring?days=30'),
+          // The same window the bell and the Settings screen promise. This panel
+          // is called "Stock Alerts" and its empty state says the inventory is
+          // healthy, so reading a shorter window than the card beside it counts
+          // meant the two could contradict each other on one screen: "3 expiring
+          // within 90 days" above "no expiring items".
+          api.get(`/inventory/expiring?days=${EXPIRING_WINDOW_DAYS}`),
         ]);
 
       if (analyticsRes.status === 'fulfilled') setAnalytics(analyticsRes.value.data);

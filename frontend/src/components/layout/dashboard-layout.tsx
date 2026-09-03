@@ -15,6 +15,7 @@ import {
   LayoutDashboard, Package, Users, FileText,
   Calendar, Activity, CreditCard, Settings, UserCog,
   Menu, X, LogOut, ShoppingCart, Receipt, BarChart3, ListChecks,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface NavItem {
@@ -37,6 +38,10 @@ const navItems: NavItem[] = [
   // the server yet, which is not something to go looking for under Settings.
   { href: '/sync', label: 'Offline Queue', icon: ListChecks, showQueueCount: true },
   { href: '/inventory', label: 'Inventory', icon: Package },
+  // Beside Inventory rather than under Reports, because it is the shelf half of
+  // the same question. The answer is named patients and their phone numbers, so
+  // it mirrors the authorize() guard on GET /inventory/recall.
+  { href: '/recall', label: 'Recall Trace', icon: ShieldAlert, roles: ['pharmacy_owner', 'pharmacist'] },
   { href: '/patients', label: 'Patients', icon: Users },
   { href: '/claims', label: 'NHIS Claims', icon: FileText },
   { href: '/consultations', label: 'Consultations', icon: Calendar },

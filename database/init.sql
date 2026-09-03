@@ -579,12 +579,21 @@ INSERT INTO subscription_plans (tier, name, description, monthly_price, annual_p
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
-  NEW.updated_at = NOW();
+  -- Guarded, because the list below includes notifications and reminders and
+  -- neither has an updated_at column. Assigning to a field the row does not
+  -- have raises "record new has no field updated_at", which would make every
+  -- update to those two tables fail — marking a notification read, or a
+  -- reminder sent. jsonb_exists is the `?` operator spelled out, so this can
+  -- be pasted into an editor that treats that character as a placeholder.
+  IF jsonb_exists(to_jsonb(NEW), 'updated_at') THEN
+    NEW.updated_at = NOW();
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
--- Apply updated_at trigger to all tables with updated_at
+-- Applied to every table that is expected to carry updated_at. The function
+-- above no-ops on the two that do not, rather than breaking them.
 DO $$
 DECLARE
   t TEXT;

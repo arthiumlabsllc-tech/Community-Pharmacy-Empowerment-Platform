@@ -1,0 +1,6 @@
+# The harnesses are copied into a Linux container and run by psql and bash.
+# Under core.autocrlf=true a checkout on Windows would give them CRLF, and a
+# trailing carriage return on a psql meta-command or a bash line is the kind of
+# failure that reports as something else entirely.
+*.sh text eol=lf
+database/tests/*.sql text eol=lf

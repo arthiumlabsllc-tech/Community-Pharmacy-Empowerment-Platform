@@ -19,6 +19,16 @@ import {
 import paystack, { PaystackError, type ChargeResult } from '../services/paystack.service';
 import { saleTime } from '../utils/sale-time';
 import { buildTillProductQuery } from '../utils/pos-queries';
+import {
+  describeFefoShortfall,
+  planFefo,
+  summariseAllocations,
+  todayInGhana,
+  toIsoDate,
+  type FefoPlan,
+} from '../utils/fefo';
+import { hasBatchTables, loadBatches, recordMovement } from '../utils/batches';
+import { refreshStockAlertsFor } from '../utils/stock-alerts';
 
 /**
  * Point of Sale.
@@ -42,6 +52,16 @@ import { buildTillProductQuery } from '../utils/pos-queries';
  *     is a sale replayed from an offline queue: those goods have already left
  *     the building, so the count is allowed to go negative and the line is
  *     reported back for a stock-take to reconcile.
+ *
+ *  4. A product is not one number, it is a set of batches. Where a product has
+ *     been received against a lot, the units come off the shortest-dated batch
+ *     first (utils/fefo.ts decides which, inside this transaction), the batches
+ *     are decremented rather than the product row, and the receipt line records
+ *     the lots it drew from. The derived-stock trigger on `inventory` then
+ *     recomputes the product's own quantity, batch and cost from what is left.
+ *     A product that has never been received against a batch — or one that
+ *     predates the batch tables being populated — falls back to the product row
+ *     exactly as before, so nothing that worked stops working.
  */
 
 const router = Router();
@@ -130,6 +150,14 @@ interface PosLine {
   discountAmount: number;
   lineTotal: number;
   vatTreatment: VatTreatment;
+  /**
+   * Which batches this line came out of, in the order they should be taken.
+   *
+   * Null for an ad-hoc line with no product behind it, and null for a stocked
+   * product that has no batches at all — that is the signal to fall back to the
+   * product row rather than a shortfall to refuse the sale on.
+   */
+  batchPlan: FefoPlan | null;
 }
 
 /**
@@ -172,8 +200,15 @@ interface RawLine {
  * Turns one submitted basket line into a server-priced PosLine.
  * `stock` is the inventory row; when it is present its price, cost and VAT
  * classification override anything the client sent.
+ * `plan` is the FEFO allocation for this line, or null when the product has no
+ * batches to allocate from.
  */
-function buildLine(raw: RawLine, stock: any, basketDiscountShare: number): PosLine {
+function buildLine(
+  raw: RawLine,
+  stock: any,
+  basketDiscountShare: number,
+  plan: FefoPlan | null
+): PosLine {
   const quantity = Math.floor(Number(raw.quantity));
   if (!Number.isFinite(quantity) || quantity < 1) {
     throw new PosError(`Invalid quantity for ${raw.product_name || stock?.product_name || 'an item'}`);
@@ -200,35 +235,79 @@ function buildLine(raw: RawLine, stock: any, basketDiscountShare: number): PosLi
   const discountAmount = Math.min(round2(ownDiscount + basketDiscountShare), gross);
   const lineTotal = round2(gross - discountAmount);
 
+  const productName =
+    (stocked ? stock.product_name : String(raw.product_name || '').trim()) || 'Unnamed item';
+  // The lots that physically went into the bag, when the product is tracked by
+  // lot at all. sale_item_batches keeps the full breakdown; this is the label
+  // for the receipt line.
+  const summary = plan ? summariseAllocations(plan.allocations) : null;
+  // Zero-cost batches are a delivery nobody priced yet, not a reason to report
+  // the line as free stock. Fall back to the product's own cost in that case
+  // rather than printing a 100% margin that is really a missing figure.
+  const batchCost = plan && plan.weightedUnitCost > 0 ? plan.weightedUnitCost : null;
+
   return {
     inventoryId: stocked ? stock.id : null,
-    productName: (stocked ? stock.product_name : String(raw.product_name || '').trim()) || 'Unnamed item',
+    productName,
     productCode: stocked ? stock.product_code : null,
     genericName: stocked ? stock.generic_name : null,
-    batchNumber: stocked ? stock.batch_number : null,
-    expiryDate: stocked && stock.expiry_date ? stock.expiry_date : null,
+    batchNumber: summary ? summary.batchNumber : stocked ? stock.batch_number : null,
+    expiryDate: summary
+      ? summary.expiryDate
+      : stocked
+        ? toIsoDate(stock.expiry_date)
+        : null,
     requiresPrescription: stocked ? Boolean(stock.requires_prescription) : false,
     quantity,
     sellUnit: String(raw.sell_unit || (stocked ? stock.default_sell_unit : '') || 'pack'),
     unitPrice: round2(unitPrice),
-    unitCost: stocked ? Number(stock.cost_price) || 0 : 0,
+    unitCost: batchCost ?? (stocked ? Number(stock.cost_price) || 0 : 0),
     discountAmount,
     lineTotal,
     vatTreatment: stocked ? toVatTreatment(stock.vat_treatment) : toVatTreatment(raw.vat_treatment),
+    batchPlan: plan,
   };
 }
 
 /**
- * Prices a whole basket: loads stock rows, distributes the basket discount,
- * builds the lines and runs the Ghana tax engine over them.
+ * How the sale route wants a basket priced.
+ */
+interface BasketOptions {
+  /**
+   * Lock the batch rows until the transaction ends. Only the sale route does
+   * this. A quote must not: it would hold a lock on stock while the cashier is
+   * still deciding what to sell, which is the stall rule 2 exists to avoid.
+   */
+  reserve?: boolean;
+  /**
+   * Plan for a sale the till recorded while the network was down. The goods
+   * have physically left, so the plan covers the whole quantity even when the
+   * shelf cannot and the shortfall is reported instead of refused.
+   */
+  allowOversell?: boolean;
+  /**
+   * Refuse the basket when the shelf cannot cover it. Off for a quote, which
+   * flags instead — the cashier may legitimately be selling the last pack, and
+   * the sale route is what enforces the limit.
+   */
+  enforceStock?: boolean;
+}
+
+/**
+ * Prices a whole basket: loads stock rows and their batches, works out which
+ * lots each line comes from, distributes the basket discount, builds the lines
+ * and runs the Ghana tax engine over them.
  */
 async function priceBasket(
   client: PoolClient,
   pharmacyId: string,
   rawItems: RawLine[],
   basketDiscount: number,
-  taxSettings: TaxSettings
+  taxSettings: TaxSettings,
+  options: BasketOptions = {}
 ) {
+  const { reserve = false, allowOversell = false, enforceStock = false } = options;
+
   const inventoryIds = rawItems
     .map((item) => item.inventory_id)
     .filter((id): id is string => Boolean(id));
@@ -247,6 +326,8 @@ async function priceBasket(
   }
 
   const stockById = new Map(stockRows.map((row) => [row.id, row]));
+  const batchesByProduct = await loadBatches(client, pharmacyId, inventoryIds, reserve);
+  const today = todayInGhana();
 
   for (const item of rawItems) {
     if (item.inventory_id && !stockById.has(item.inventory_id)) {
@@ -280,9 +361,39 @@ async function priceBasket(
   });
 
   const shares = distributeDiscount(grossValues, basketDiscount);
-  const lines = rawLines.map((raw, index) =>
-    buildLine(raw, raw.inventory_id ? stockById.get(raw.inventory_id) : null, shares[index] || 0)
-  );
+  const stockWarnings: Array<{ productName: string; sold: number; available: number }> = [];
+
+  const lines = rawLines.map((raw, index) => {
+    const stock = raw.inventory_id ? stockById.get(raw.inventory_id) : null;
+    const batches = raw.inventory_id ? batchesByProduct.get(raw.inventory_id) ?? [] : [];
+    // No batches at all is not the same as no stock. A product that has never
+    // been received against a lot still has its own quantity on the product row,
+    // and null sends the caller down that path; an empty plan would refuse the
+    // sale on a shelf that is full.
+    const plan = stock && batches.length > 0
+      ? planFefo(batches, Math.floor(Number(raw.quantity) || 0), { today, allowOversell })
+      : null;
+
+    const line = buildLine(raw, stock ?? null, shares[index] || 0, plan);
+
+    if (plan) {
+      if (enforceStock && plan.shortfall > 0) {
+        throw new PosError(describeFefoShortfall(line.productName, plan, line.quantity), 409);
+      }
+      // Reported rather than refused. An offline sale goes ahead because the
+      // goods have already left the building; the negative count is the honest
+      // statement and a stock-take reconciles it.
+      if (plan.available < line.quantity) {
+        stockWarnings.push({
+          productName: line.productName,
+          sold: line.quantity,
+          available: plan.available,
+        });
+      }
+    }
+
+    return line;
+  });
 
   const tax = computeSaleTax(
     lines.map((line) => ({ lineTotal: line.lineTotal, vatTreatment: line.vatTreatment })),
@@ -293,7 +404,7 @@ async function priceBasket(
     }
   );
 
-  return { lines, tax, stockById };
+  return { lines, tax, stockById, stockWarnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,16 +440,43 @@ async function nextReceiptNumber(client: PoolClient, pharmacyId: string): Promis
 // Persistence
 // ---------------------------------------------------------------------------
 
-async function insertLineItems(client: PoolClient, saleId: string, lines: PosLine[], taxLines: any[]) {
+interface LineItemContext {
+  pharmacyId: string;
+  userId: string;
+  /**
+   * When the goods actually left the shelf. For a sale queued offline that is
+   * the moment the cashier pressed Charge, not the moment the sync ran — which
+   * can be the following morning — and the ledger belongs to the first one.
+   */
+  occurredAt: string | null;
+}
+
+/**
+ * Writes the receipt lines, then takes the stock off the batches each one drew
+ * from and records the movement.
+ *
+ * The decrement happens here rather than earlier in the transaction because
+ * stock_movements points at a sale_item, and the plan it records was already
+ * settled against rows locked in priceBasket — nothing can change the batches
+ * in between.
+ */
+async function insertLineItems(
+  client: PoolClient,
+  saleId: string,
+  lines: PosLine[],
+  taxLines: any[],
+  context: LineItemContext
+) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const computed = taxLines[i];
-    await client.query(
+    const inserted = await client.query(
       `INSERT INTO sale_items
          (sale_id, inventory_id, product_name, product_code, generic_name, batch_number,
           expiry_date, requires_prescription, quantity, sell_unit, unit_price, discount_amount,
           line_total, vat_treatment, taxable_base, vat_amount, nhil_amount, getfund_amount, unit_cost)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+       RETURNING id`,
       [
         saleId, line.inventoryId, line.productName, line.productCode, line.genericName,
         line.batchNumber, line.expiryDate, line.requiresPrescription, line.quantity,
@@ -346,6 +484,62 @@ async function insertLineItems(client: PoolClient, saleId: string, lines: PosLin
         computed.taxableBase, computed.vat, computed.nhil, computed.getfund, line.unitCost,
       ]
     );
+
+    const plan = line.batchPlan;
+    // No plan means the product is not tracked by lot, and its stock was taken
+    // off the product row by the caller instead.
+    if (!plan || plan.allocations.length === 0 || !line.inventoryId) continue;
+
+    const saleItemId = inserted.rows[0].id as string;
+
+    for (const allocation of plan.allocations) {
+      // No `quantity >= ` guard here. The plan was computed from these locked
+      // rows, so the only way it can exceed them is a sale recorded offline,
+      // which is allowed to go negative on purpose.
+      const drawn = await client.query(
+        `UPDATE inventory_batches
+            SET quantity = quantity - $1, updated_at = NOW()
+          WHERE id = $2 AND pharmacy_id = $3
+          RETURNING quantity`,
+        [allocation.quantity, allocation.batchId, context.pharmacyId]
+      );
+
+      if (drawn.rowCount === 0) {
+        // Somebody deleted the batch between the plan and here. Recording the
+        // sale against a lot that no longer exists would put a lot number on a
+        // receipt that a recall could never find.
+        throw new PosError(
+          `Batch ${allocation.batchNumber} of ${line.productName} was removed while this sale was being recorded. Try again.`,
+          409
+        );
+      }
+
+      // The product's own quantity, batch, expiry and cost are recomputed from
+      // the batches by a trigger, so nothing here writes them.
+      await client.query(
+        `INSERT INTO sale_item_batches
+           (sale_item_id, pharmacy_id, batch_id, batch_number, expiry_date,
+            inventory_id, quantity, unit_cost)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [
+          saleItemId, context.pharmacyId, allocation.batchId, allocation.batchNumber,
+          allocation.expiryDate, line.inventoryId, allocation.quantity, allocation.unitCost,
+        ]
+      );
+
+      await recordMovement(client, {
+        pharmacyId: context.pharmacyId,
+        inventoryId: line.inventoryId,
+        batchId: allocation.batchId,
+        quantityChange: -allocation.quantity,
+        quantityAfter: Number(drawn.rows[0]?.quantity ?? 0),
+        reason: 'sale',
+        saleId,
+        saleItemId,
+        userId: context.userId,
+        occurredAt: context.occurredAt,
+      });
+    }
   }
 }
 
@@ -690,7 +884,11 @@ router.post(
           pharmacyId,
           rawItems,
           basketDiscount,
-          taxSettings
+          taxSettings,
+          // Nothing is locked and nothing is refused. The quote has to be able
+          // to say what FEFO would do without holding stock hostage while the
+          // cashier is still scanning.
+          { reserve: false, allowOversell: false, enforceStock: false }
         );
 
         return {
@@ -722,6 +920,21 @@ router.post(
               // limit with a conditional UPDATE.
               quantity_available: stock ? Number(stock.quantity) : null,
               oversold: stock ? line.quantity > Number(stock.quantity) : false,
+              // What FEFO would actually take, so the till can show the lots
+              // behind the total rather than quoting a number the sale then
+              // refuses to honour. Empty for a product not tracked by lot.
+              batches: (line.batchPlan?.allocations ?? []).map((allocation) => ({
+                batch_number: allocation.batchNumber,
+                expiry_date: allocation.expiryDate,
+                quantity: allocation.quantity,
+              })),
+              sellable_available: line.batchPlan ? line.batchPlan.available : null,
+              // The reason, when there is one. "Out of stock" and "every batch
+              // expired" need different things done about them.
+              stock_note:
+                line.batchPlan && line.batchPlan.shortfall > 0
+                  ? describeFefoShortfall(line.productName, line.batchPlan, line.quantity)
+                  : null,
             };
           }),
           summary: {
@@ -880,7 +1093,17 @@ router.post(
         }
 
         const taxSettings = await loadTaxSettings(pharmacyId, client);
-        const { lines, tax } = await priceBasket(client, pharmacyId, items as RawLine[], basketDiscount, taxSettings);
+        const { lines, tax, stockWarnings } = await priceBasket(
+          client,
+          pharmacyId,
+          items as RawLine[],
+          basketDiscount,
+          taxSettings,
+          // Batches are locked for the rest of the transaction, and an offline
+          // sale is planned to cover the whole quantity because the goods have
+          // already gone — so it is warned about rather than refused.
+          { reserve: true, allowOversell: recordedOffline, enforceStock: !recordedOffline }
+        );
 
         if (lines.length === 0) throw new PosError('A sale needs at least one item');
 
@@ -926,9 +1149,15 @@ router.post(
         // allowed to go negative and the line is reported back, because a
         // negative count is the honest statement: "we sold more than we thought
         // we had", which is what a stock-take then reconciles.
-        const stockWarnings: Array<{ productName: string; sold: number; available: number }> = [];
+        //
+        // Only for products that are not tracked by lot. A batched line was
+        // already planned against locked rows in priceBasket and is taken off
+        // its batches by insertLineItems, which needs the sale_item ids to point
+        // the ledger at. Writing its quantity here as well would deduct it
+        // twice, and the trigger would overwrite the result anyway.
         for (const line of lines) {
           if (!line.inventoryId) continue;
+          if (line.batchPlan) continue;
 
           if (recordedOffline) {
             const before = await client.query('SELECT quantity FROM inventory WHERE id = $1', [
@@ -1024,7 +1253,11 @@ router.post(
         );
 
         const saleId = saleResult.rows[0].id as string;
-        await insertLineItems(client, saleId, lines, tax.lines);
+        await insertLineItems(client, saleId, lines, tax.lines, {
+          pharmacyId,
+          userId,
+          occurredAt: clientRecordedAt,
+        });
 
         for (const payment of cashPayments) {
           await insertPayment(client, saleId, pharmacyId, userId, payment);
@@ -1065,6 +1298,17 @@ router.post(
           stockWarnings,
         };
       });
+
+      // The stock left the shelf when that committed, so this is the moment an
+      // out-of-stock or low-stock alert becomes true. After the commit rather
+      // than inside it: a notification that would not insert must not take a
+      // finished sale with it. A duplicate sync carries no lines and is skipped.
+      await refreshStockAlertsFor(
+        db,
+        pharmacyId,
+        created.lines.map((line) => line.inventoryId),
+        'pos.sale'
+      );
 
       // Phase two: gateway payments, deliberately outside the transaction so a
       // slow Paystack call never holds the pharmacy row lock.
@@ -1568,8 +1812,13 @@ router.post(
   ]),
   async (req: Request, res: Response) => {
     const pharmacyId = req.user!.pharmacyId;
+    const userId = req.user!.userId;
+    const reason = String(req.body.reason).trim();
 
     try {
+      /** The products whose stock went back, collected as the lines are restored. */
+      const affected: string[] = [];
+
       const sale = await db.transaction(async (client) => {
         const locked = await client.query(
           `SELECT id, status FROM sales WHERE id = $1 AND pharmacy_id = $2 FOR UPDATE`,
@@ -1580,14 +1829,79 @@ router.post(
           throw new PosError('This sale has already been voided', 409);
         }
 
-        // Put the stock back on the shelf.
-        await client.query(
-          `UPDATE inventory i
-              SET quantity = i.quantity + si.quantity, updated_at = NOW()
-             FROM sale_items si
-            WHERE si.sale_id = $1 AND si.inventory_id = i.id AND i.pharmacy_id = $2`,
-          [req.params.id, pharmacyId]
+        // Put the stock back where it came from.
+        //
+        // This used to add the units back onto the product row, which with
+        // batches in place does two wrong things at once: the derived-stock
+        // trigger recomputes that row from the batches a moment later, so the
+        // stock silently disappears, and the product is credited for units that
+        // came out of a lot it never held. sale_item_batches says which lots
+        // each line drew from, so that is what gets credited.
+        //
+        // Per line rather than per sale, because a basket can mix a product
+        // tracked by lot with one that is not and each goes back its own way.
+        const soldLines = await client.query(
+          `SELECT id, inventory_id, quantity
+             FROM sale_items
+            WHERE sale_id = $1 AND inventory_id IS NOT NULL`,
+          [req.params.id]
         );
+        const batchesAvailable = await hasBatchTables(client);
+
+        for (const sold of soldLines.rows) {
+          affected.push(sold.inventory_id);
+
+          const drawn = batchesAvailable
+            ? await client.query(
+                `SELECT batch_id, quantity FROM sale_item_batches WHERE sale_item_id = $1`,
+                [sold.id]
+              )
+            : { rows: [] as Array<{ batch_id: string | null; quantity: number }> };
+
+          if (drawn.rows.length === 0) {
+            // A line recorded before batch tracking existed, or for a product
+            // that is not tracked by lot. Back onto the product row, as before.
+            await client.query(
+              `UPDATE inventory
+                  SET quantity = quantity + $1, updated_at = NOW()
+                WHERE id = $2 AND pharmacy_id = $3`,
+              [sold.quantity, sold.inventory_id, pharmacyId]
+            );
+            continue;
+          }
+
+          for (const entry of drawn.rows) {
+            // A null batch_id means the lot was deleted since the sale. The
+            // junction row keeps the number for the record, but there is nothing
+            // left to credit.
+            if (!entry.batch_id) continue;
+
+            const restored = await client.query(
+              `UPDATE inventory_batches
+                  SET quantity = quantity + $1, updated_at = NOW()
+                WHERE id = $2 AND pharmacy_id = $3
+                RETURNING quantity`,
+              [entry.quantity, entry.batch_id, pharmacyId]
+            );
+            if (restored.rowCount === 0) continue;
+
+            // The sale is undone but the fact that it happened is not: the
+            // customer's units still came out of this lot, so the junction rows
+            // stay and the reversal goes to the ledger instead.
+            await recordMovement(client, {
+              pharmacyId,
+              inventoryId: sold.inventory_id,
+              batchId: entry.batch_id,
+              quantityChange: Number(entry.quantity),
+              quantityAfter: Number(restored.rows[0].quantity),
+              reason: 'sale_void',
+              note: reason,
+              saleId: req.params.id,
+              saleItemId: sold.id,
+              userId,
+            });
+          }
+        }
 
         await client.query(
           `UPDATE sale_payments SET status = 'refunded'
@@ -1599,11 +1913,16 @@ router.post(
           `UPDATE sales
               SET status = 'voided', voided_at = NOW(), void_reason = $2, amount_paid = 0, change_due = 0
             WHERE id = $1`,
-          [req.params.id, String(req.body.reason).trim()]
+          [req.params.id, reason]
         );
 
         return settleSale(client, req.params.id);
       });
+
+      // Stock went back on the shelf, so an out-of-stock alert the sale raised
+      // may no longer be true — and a partial return may leave it exactly as it
+      // was, which the refresh works out rather than the caller guessing.
+      await refreshStockAlertsFor(db, pharmacyId, affected, 'pos.void');
 
       res.json({ success: true, message: 'Sale voided and stock returned to the shelf', data: sale });
     } catch (error) {

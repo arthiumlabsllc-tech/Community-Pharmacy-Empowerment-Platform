@@ -13,7 +13,9 @@
     "db:migrate": "node -r ts-node/register src/database/migrate.ts",
     "db:seed": "node -r ts-node/register src/database/seed.ts",
     "db:reset": "node -r ts-node/register src/database/reset.ts",
-    "parity:emit": "node -r ts-node/register scripts/emit-parity-vectors.ts"
+    "parity:emit": "node -r ts-node/register scripts/emit-parity-vectors.ts",
+    "recall:emit": "node -r ts-node/register scripts/emit-recall-sql.ts",
+    "alerts:emit": "node -r ts-node/register scripts/emit-stock-alert-sql.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.474.0",

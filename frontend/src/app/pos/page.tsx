@@ -35,6 +35,7 @@ import {
   type ProvisionalSale,
 } from '@/components/pos/offline-receipt-modal';
 import { api, ApiError } from '@/lib/api';
+import { daysUntilExpiry, expiryCountdownLabel } from '@/lib/dates';
 import { buildTotalsView } from '@/lib/pos-totals';
 import {
   amount,
@@ -102,12 +103,22 @@ function newBasketId(): string {
   });
 }
 
-function daysUntilExpiry(value: string | null): number | null {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return Math.ceil((date.getTime() - Date.now()) / 86_400_000);
-}
+/**
+ * How far ahead a basket line warns about its expiry date.
+ *
+ * The badge itself comes from `lib/dates`, which used to be computed here as
+ * `expiry - Date.now()` with a `Math.ceil`. That spent a full day returning -0:
+ * not less than zero, so a lot that had already expired wore a yellow "Exp 0d"
+ * and looked like it had today left, right up to the moment the server refused
+ * the sale. On a till, where the whole point is not stopping to think, that is
+ * the badge most worth getting right.
+ *
+ * 90 rather than the inventory table's 30 because the two are answering
+ * different questions: a cashier needs to know a box is short-dated before it
+ * goes into a bag, while the table's badge is a countdown for somebody walking
+ * the shelves.
+ */
+const BASKET_EXPIRY_WINDOW_DAYS = 90;
 
 /**
  * The till.
@@ -1090,7 +1101,10 @@ export default function PosPage() {
               <ul className="space-y-2">
                 {basket.map((line) => {
                   const quoted = totals.lines[line.inventory_id];
-                  const expiryDays = daysUntilExpiry(line.expiry_date);
+                  const expiry = expiryCountdownLabel(
+                    line.expiry_date,
+                    BASKET_EXPIRY_WINDOW_DAYS
+                  );
                   return (
                     <li
                       key={line.inventory_id}
@@ -1111,17 +1125,20 @@ export default function PosPage() {
                               </span>
                             )}
                             {line.batch_number && (
-                              <span className="badge badge-neutral text-2xs">
+                              <span
+                                className="badge badge-neutral text-2xs"
+                                title="The lot this line will be drawn from. With several on the shelf, the shortest-dated one goes first."
+                              >
                                 {line.batch_number}
                               </span>
                             )}
-                            {expiryDays !== null && expiryDays <= 90 && (
+                            {expiry && (
                               <span
                                 className={`badge text-2xs ${
-                                  expiryDays < 0 ? 'badge-danger' : 'badge-warning'
+                                  expiry.expired ? 'badge-danger' : 'badge-warning'
                                 }`}
                               >
-                                {expiryDays < 0 ? 'Expired' : `Exp ${expiryDays}d`}
+                                {expiry.text}
                               </span>
                             )}
                           </div>
@@ -1546,9 +1563,15 @@ function ProductCard({
         {product.vat_treatment === 'standard' && (
           <span className="badge badge-neutral text-2xs">VAT</span>
         )}
+        {/* Which badge to wear is the server's call: `is_expired` and
+            `near_expiry` come from the query that also decides whether the sale
+            will be accepted, so the grid cannot contradict the till. The number
+            inside it is the shared day arithmetic, and the null check stops a
+            product flagged near-expiry without a readable date printing
+            "Exp null d". */}
         {product.is_expired ? (
           <span className="badge badge-danger text-2xs">Expired</span>
-        ) : product.near_expiry ? (
+        ) : product.near_expiry && expiryDays !== null ? (
           <span className="badge badge-warning text-2xs">Exp {expiryDays}d</span>
         ) : null}
         {product.needs_reorder && product.quantity > 0 && (

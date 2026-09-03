@@ -11,7 +11,9 @@ import { DashboardLayout } from '@/components/layout/dashboard-layout';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ItemFormModal, type InventoryItem } from '@/components/inventory/item-form-modal';
 import { BulkUploadModal } from '@/components/inventory/bulk-upload-modal';
+import { BatchPanelModal } from '@/components/inventory/batch-panel-modal';
 import { api } from '@/lib/api';
+import { daysUntilExpiry, formatDateUtc } from '@/lib/dates';
 import {
   Search,
   Plus,
@@ -43,14 +45,28 @@ const TAB_LABEL: Record<TabKey, string> = {
   expiring: 'Expiring Soon',
 };
 
+/**
+ * The row badge, from the same day arithmetic the server and the till use.
+ *
+ * `lib/dates` rather than `expiry - Date.now()`, which is what this did before:
+ * a DATE column has no time of day and `Date.now()` does, so `Math.ceil` spent
+ * a full 24 hours returning -0 — not less than zero, so stock that had already
+ * expired read "Expires in 0d" and looked sellable right up to the moment the
+ * till refused it.
+ *
+ * The 30 days here is a countdown and not the alert window. The bell, the
+ * dashboard and the Expiring tab all work to 90 (`EXPIRING_WINDOW_DAYS`); a row
+ * badge that warned 90 days out would be wearing a warning on most of the shelf
+ * and would stop meaning anything.
+ */
 function getStatus(item: InventoryItem) {
-  const daysToExpiry = Math.ceil(
-    (new Date(item.expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-  );
+  const daysToExpiry = daysUntilExpiry(item.expiry_date);
 
-  if (daysToExpiry < 0) return { label: 'Expired', className: 'badge-danger' };
+  if (daysToExpiry !== null && daysToExpiry < 0) return { label: 'Expired', className: 'badge-danger' };
   if (item.quantity === 0) return { label: 'Out of Stock', className: 'badge-danger' };
-  if (daysToExpiry <= 30) return { label: `Expires in ${daysToExpiry}d`, className: 'badge-warning' };
+  if (daysToExpiry !== null && daysToExpiry <= 30) {
+    return { label: `Expires in ${daysToExpiry}d`, className: 'badge-warning' };
+  }
   if (item.quantity <= item.reorder_level) return { label: 'Low Stock', className: 'badge-warning' };
   return { label: 'In Stock', className: 'badge-success' };
 }
@@ -84,7 +100,7 @@ export default function InventoryPage() {
   const { isAuthenticated } = useAuthStore();
   const hydrated = useHydrated();
   const router = useRouter();
-  const { canEditInventory, canDeleteInventory } = usePermissions();
+  const { canEditInventory, canDeleteInventory, canTraceRecall } = usePermissions();
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [summary, setSummary] = useState<InventorySummary | null>(null);
@@ -102,6 +118,7 @@ export default function InventoryPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<InventoryItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [batchItem, setBatchItem] = useState<InventoryItem | null>(null);
 
   const debouncedSearch = useDebouncedValue(search, 400);
 
@@ -356,7 +373,10 @@ export default function InventoryPage() {
                 <th>Tax</th>
                 <th>Expiry Date</th>
                 <th>Status</th>
-                {(canEditInventory || canDeleteInventory) && <th>Actions</th>}
+                {/* Always rendered: reading a product's lots is allowed for any
+                    signed-in user, so a cashier can check which box to reach for
+                    even though only an owner or pharmacist can move stock. */}
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -402,7 +422,23 @@ export default function InventoryPage() {
                         </div>
                       </td>
                       <td className="text-sm">{item.category || '—'}</td>
-                      <td className="text-sm font-mono text-xs">{item.batch_number || '—'}</td>
+                      <td className="text-sm">
+                        {/* With lot tracking installed this column is derived:
+                            the shortest-dated lot that still has stock, which is
+                            the one the till takes next. It is one of possibly
+                            several, so it says which rather than implying it is
+                            the only one. */}
+                        <span
+                          className="font-mono text-xs"
+                          title={
+                            item.batch_number
+                              ? 'The lot the till will draw from next. Open Batches and lots to see all of them.'
+                              : undefined
+                          }
+                        >
+                          {item.batch_number || '—'}
+                        </span>
+                      </td>
                       <td>
                         <span
                           className={`font-semibold ${
@@ -431,37 +467,44 @@ export default function InventoryPage() {
                         )}
                       </td>
                       <td className="text-sm">
-                        {new Date(item.expiry_date).toLocaleDateString([], {
-                          day: 'numeric', month: 'short', year: 'numeric',
-                        })}
+                        {/* Read in UTC: a DATE column has no zone, and rendering
+                            it in the machine's local one shows the day before it
+                            anywhere west of Greenwich. */}
+                        {formatDateUtc(item.expiry_date) || '—'}
                       </td>
                       <td><span className={status.className}>{status.label}</span></td>
-                      {(canEditInventory || canDeleteInventory) && (
-                        <td>
-                          <div className="flex gap-1">
-                            {canEditInventory && (
-                              <button
-                                className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
-                                title="Edit item"
-                                aria-label={`Edit ${item.product_name}`}
-                                onClick={() => { setEditingItem(item); setFormOpen(true); }}
-                              >
-                                <Edit2 className="w-4 h-4" />
-                              </button>
-                            )}
-                            {canDeleteInventory && (
-                              <button
-                                className="p-2 rounded-lg hover:bg-red-50 text-red-500"
-                                title="Remove item"
-                                aria-label={`Remove ${item.product_name}`}
-                                onClick={() => setPendingDelete(item)}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      )}
+                      <td>
+                        <div className="flex gap-1">
+                          <button
+                            className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
+                            title="Batches and lots — what is on the shelf, and which one the till takes next"
+                            aria-label={`Batches and lots for ${item.product_name}`}
+                            onClick={() => setBatchItem(item)}
+                          >
+                            <Boxes className="w-4 h-4" />
+                          </button>
+                          {canEditInventory && (
+                            <button
+                              className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
+                              title="Edit item"
+                              aria-label={`Edit ${item.product_name}`}
+                              onClick={() => { setEditingItem(item); setFormOpen(true); }}
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canDeleteInventory && (
+                            <button
+                              className="p-2 rounded-lg hover:bg-red-50 text-red-500"
+                              title="Remove item"
+                              aria-label={`Remove ${item.product_name}`}
+                              onClick={() => setPendingDelete(item)}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   );
                 })
@@ -510,6 +553,15 @@ export default function InventoryPage() {
           setUploadOpen(false);
           await refreshAll();
         }}
+      />
+
+      <BatchPanelModal
+        open={!!batchItem}
+        productId={batchItem?.id ?? null}
+        canEdit={canEditInventory}
+        canTrace={canTraceRecall}
+        onClose={() => setBatchItem(null)}
+        onChanged={() => { void refreshAll(); }}
       />
 
       <ConfirmDialog

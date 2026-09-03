@@ -100,8 +100,41 @@ describe('buildTillProductQuery', () => {
   it('keeps the shortest-dated stock first, which is what FEFO means at the counter', () => {
     const { text } = buildTillProductQuery({ pharmacyId: 'ph-1' });
 
-    expect(text).toContain('CASE WHEN expiry_date > CURRENT_DATE THEN 0 ELSE 1 END');
+    expect(text).toContain('WHEN expiry_date < CURRENT_DATE THEN 2');
     expect(text.indexOf('expiry_date ASC')).toBeLessThan(text.indexOf('product_name ASC'));
+  });
+
+  it('treats a batch dated today as sellable, in the flag and in the order alike', () => {
+    const { text } = buildTillProductQuery({ pharmacyId: 'ph-1' });
+
+    // The printed date is the last day the manufacturer guarantees the
+    // medicine. `<=` here cost a legitimate sale, because the till refuses to
+    // add an is_expired product to the basket at all.
+    expect(text).toContain('(expiry_date < CURRENT_DATE) AS is_expired');
+    expect(text).not.toContain('(expiry_date <= CURRENT_DATE) AS is_expired');
+
+    // And today's date is the most urgent stock on the shelf, so it belongs in
+    // the leading group rather than down with the expired rows.
+    expect(text).toContain('ELSE 0 END');
+    expect(text).not.toContain('CASE WHEN expiry_date > CURRENT_DATE THEN 0 ELSE 1 END');
+  });
+
+  it('puts undated rows between the sellable and the expired', () => {
+    const { text } = buildTillProductQuery({ pharmacyId: 'ph-1' });
+
+    // Matches sortBatchesFefo in utils/fefo.ts and compareTillOrder in the
+    // offline catalogue: a batch nobody has dated is still stock, but it should
+    // not be dispensed ahead of one that is about to expire.
+    expect(text).toContain('CASE WHEN expiry_date IS NULL THEN 1');
+    expect(text.indexOf('expiry_date IS NULL THEN 1')).toBeLessThan(
+      text.indexOf('expiry_date < CURRENT_DATE THEN 2')
+    );
+  });
+
+  it('counts a batch dated today as near expiry, not as no badge at all', () => {
+    const { text } = buildTillProductQuery({ pharmacyId: 'ph-1' });
+
+    expect(text).toContain('(expiry_date >= CURRENT_DATE');
   });
 
   it('breaks ties on id so a paged fetch cannot skip or repeat a row', () => {

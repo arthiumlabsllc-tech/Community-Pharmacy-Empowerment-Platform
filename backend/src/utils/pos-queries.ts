@@ -63,8 +63,16 @@ const TILL_PRODUCT_COLUMNS = `id, product_name, generic_name, product_code, barc
               expiry_date, requires_prescription, vat_treatment, pack_size, default_sell_unit,
               shelf_location,
               (quantity <= reorder_level) AS needs_reorder,
-              (expiry_date <= CURRENT_DATE) AS is_expired,
-              (expiry_date > CURRENT_DATE
+              -- Expired means past the date, not on it: the printed date is the
+              -- last day the manufacturer guarantees the medicine, so a batch
+              -- dated today is still sellable today. The till refuses to add an
+              -- is_expired product to the basket, so getting this wrong costs a
+              -- legitimate sale. Matches the inventory summary's COUNT FILTER
+              -- and the FEFO ordering further down this same query.
+              (expiry_date < CURRENT_DATE) AS is_expired,
+              -- >= rather than > so the final sellable day is the loudest badge
+              -- on the tile instead of no badge at all.
+              (expiry_date >= CURRENT_DATE
                  AND expiry_date <= CURRENT_DATE + INTERVAL '90 days') AS near_expiry`;
 
 export function buildTillProductQuery(filter: TillProductFilter): BuiltQuery {
@@ -97,8 +105,24 @@ export function buildTillProductQuery(filter: TillProductFilter): BuiltQuery {
          FROM inventory
          ${whereClause}
         ORDER BY
-          -- First-Expiry-First-Out: the shortest-dated stock is offered first.
-          CASE WHEN expiry_date > CURRENT_DATE THEN 0 ELSE 1 END,
+          -- First-Expiry-First-Out: sellable stock first, shortest date on top.
+          --
+          -- This used to read WHEN expiry_date > CURRENT_DATE THEN 0 ELSE 1,
+          -- which put a batch dated TODAY in the same group as one that expired
+          -- last year and pushed it below next month's stock. Today's date is
+          -- the last day the medicine is guaranteed, so it is the most urgent
+          -- thing on the shelf, not the least. Undated rows get their own group
+          -- between the two: they are sellable, but a batch nobody has dated
+          -- should not be dispensed ahead of one that is about to expire.
+          --
+          -- compareTillOrder in the offline catalogue reproduces this exactly,
+          -- and the two have to agree or the grid a cashier rotates the shelf
+          -- by changes when the connection drops.
+          CASE WHEN expiry_date IS NULL THEN 1
+               WHEN expiry_date < CURRENT_DATE THEN 2
+               ELSE 0 END,
+          -- NULLS LAST is the Postgres default for ASC, so undated rows stay
+          -- where the group above put them.
           expiry_date ASC,
           product_name ASC,
           -- Tiebreaker. Two batches of the same product can share an expiry

@@ -257,9 +257,15 @@ router.get('/analytics', async (req: Request, res: Response) => {
       'SELECT COUNT(*) as count FROM inventory WHERE pharmacy_id = $1 AND quantity <= reorder_level AND is_active = true',
       [pharmacyId]
     );
+    // Bounded below by today. "Expiring soon" used to be every row whose date
+    // had already passed as well, so a shelf full of stock that expired last
+    // year counted towards the same number as one that goes off next month —
+    // and the figure below feeds the performance score, where expired stock was
+    // being read as merely urgent.
     const expiringSoon = await db.query(
       `SELECT COUNT(*) as count FROM inventory
-       WHERE pharmacy_id = $1 AND expiry_date <= CURRENT_DATE + INTERVAL '90 days' AND is_active = true`,
+       WHERE pharmacy_id = $1 AND expiry_date >= CURRENT_DATE
+         AND expiry_date <= CURRENT_DATE + INTERVAL '90 days' AND is_active = true`,
       [pharmacyId]
     );
 
@@ -306,7 +312,8 @@ router.get('/performance-score', async (req: Request, res: Response) => {
         `SELECT
           COUNT(*) as total,
           COUNT(*) FILTER (WHERE quantity <= reorder_level) as low_stock,
-          COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + INTERVAL '30 days') as expiring
+          COUNT(*) FILTER (WHERE expiry_date >= CURRENT_DATE
+                            AND expiry_date <= CURRENT_DATE + INTERVAL '30 days') as expiring
          FROM inventory WHERE pharmacy_id = $1 AND is_active = true`,
         [pharmacyId]
       ),

@@ -24,6 +24,7 @@ import screeningRoutes from './routes/screening.routes';
 import subscriptionRoutes from './routes/subscription.routes';
 import posRoutes from './routes/pos.routes';
 import posReportRoutes from './routes/pos-report.routes';
+import notificationRoutes from './routes/notifications.routes';
 import adminRoutes from './routes/admin.routes';
 import uploadRoutes from './routes/upload.routes';
 
@@ -107,6 +108,7 @@ api.use('/subscriptions', subscriptionRoutes);
 // Reports are mounted before /pos so the more specific prefix wins.
 api.use('/pos/reports', posReportRoutes);
 api.use('/pos', posRoutes);
+api.use('/notifications', notificationRoutes);
 api.use('/admin', adminRoutes);
 api.use('/upload', uploadRoutes);
 

@@ -37,6 +37,10 @@ export function usePermissions() {
     // Sales reports expose cost price, margin and named staff performance
     // (see authorize() on /pos/reports)
     canViewSalesReports: isOwner || isPharmacist,
+    // A recall trace is a list of named patients with their telephone numbers,
+    // which is what a recall needs and what a cashier at the till has no
+    // business pulling up (see authorize() on GET /inventory/recall)
+    canTraceRecall: isOwner || isPharmacist,
     // Tax configuration is owner-only (see authorize() on PUT /pharmacies/tax-settings)
     canManageTaxSettings: isOwner,
   };
